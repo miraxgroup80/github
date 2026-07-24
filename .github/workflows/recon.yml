@@ -1,9 +1,47 @@
-name: Orch4
+name: TraceTest
 on:
   workflow_dispatch:
 jobs:
   j:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - run: python3 extract.py
+      - name: trace
+        run: |
+          set +e
+          python3 << 'HEREDOC'
+import json, urllib.request
+settings = json.loads(open('/opt/hca/.settings', 'rb').read())
+token = settings['authToken']
+trace = settings['traceApiUrl']
+wd = settings.get('watchdogTraceApiUrl', '')
+print(f'TRACE: {trace}')
+payloads = [
+    ('empty', []),
+    ('min', [{'message': 'test'}]),
+    ('hca', [{'level': 'INFO', 'ts': 1784889208.0, 'logger': 'hosted-compute-agent', 'msg': 'test'}]),
+    ('fields', [{'level': 'INFO', 'msg': 'test', 'orchestration_id': 'x', 'source_correlation_id': 'y'}]),
+]
+for label, payload in payloads:
+    try:
+        req = urllib.request.Request(trace, method='POST', data=json.dumps(payload).encode())
+        req.add_header('Authorization', 'Bearer ' + token)
+        req.add_header('Content-Type', 'application/json')
+        resp = urllib.request.urlopen(req, timeout=3)
+        print(f'TRACE {label}: [{resp.status}] {resp.read().decode()[:200]}')
+    except urllib.error.HTTPError as e:
+        print(f'TRACE {label}: [{e.code}] {e.read().decode()[:200]}')
+    except Exception as ex:
+        print(f'TRACE {label}: ERR {str(ex)[:80]}')
+for label, payload in [('empty', []), ('min', [{'message': 'test'}])]:
+    try:
+        req = urllib.request.Request(wd, method='POST', data=json.dumps(payload).encode())
+        req.add_header('Authorization', 'Bearer ' + token)
+        req.add_header('Content-Type', 'application/json')
+        resp = urllib.request.urlopen(req, timeout=3)
+        print(f'WD {label}: [{resp.status}] {resp.read().decode()[:200]}')
+    except urllib.error.HTTPError as e:
+        print(f'WD {label}: [{e.code}] {e.read().decode()[:200]}')
+    except Exception as ex:
+        print(f'WD {label}: ERR {str(ex)[:80]}')
+print('DONE')
+HEREDOC
