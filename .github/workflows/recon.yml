@@ -1,47 +1,66 @@
-name: TraceTest
+name: OrchFull
 on:
   workflow_dispatch:
 jobs:
   j:
     runs-on: ubuntu-latest
     steps:
-      - name: trace
+      - name: full orchestrator probe
+        timeout-minutes: 5
         run: |
           set +e
-          python3 << 'HEREDOC'
-import json, urllib.request
-settings = json.loads(open('/opt/hca/.settings', 'rb').read())
-token = settings['authToken']
-trace = settings['traceApiUrl']
-wd = settings.get('watchdogTraceApiUrl', '')
-print(f'TRACE: {trace}')
-payloads = [
-    ('empty', []),
-    ('min', [{'message': 'test'}]),
-    ('hca', [{'level': 'INFO', 'ts': 1784889208.0, 'logger': 'hosted-compute-agent', 'msg': 'test'}]),
-    ('fields', [{'level': 'INFO', 'msg': 'test', 'orchestration_id': 'x', 'source_correlation_id': 'y'}]),
-]
-for label, payload in payloads:
-    try:
-        req = urllib.request.Request(trace, method='POST', data=json.dumps(payload).encode())
-        req.add_header('Authorization', 'Bearer ' + token)
-        req.add_header('Content-Type', 'application/json')
-        resp = urllib.request.urlopen(req, timeout=3)
-        print(f'TRACE {label}: [{resp.status}] {resp.read().decode()[:200]}')
-    except urllib.error.HTTPError as e:
-        print(f'TRACE {label}: [{e.code}] {e.read().decode()[:200]}')
-    except Exception as ex:
-        print(f'TRACE {label}: ERR {str(ex)[:80]}')
-for label, payload in [('empty', []), ('min', [{'message': 'test'}])]:
-    try:
-        req = urllib.request.Request(wd, method='POST', data=json.dumps(payload).encode())
-        req.add_header('Authorization', 'Bearer ' + token)
-        req.add_header('Content-Type', 'application/json')
-        resp = urllib.request.urlopen(req, timeout=3)
-        print(f'WD {label}: [{resp.status}] {resp.read().decode()[:200]}')
-    except urllib.error.HTTPError as e:
-        print(f'WD {label}: [{e.code}] {e.read().decode()[:200]}')
-    except Exception as ex:
-        print(f'WD {label}: ERR {str(ex)[:80]}')
-print('DONE')
-HEREDOC
+          echo "=== EXTRACT JWT ==="
+          JWT=$(python3 -c "import json; print(json.loads(open('/opt/hca/.settings','rb').read())['authToken'])")
+          echo "JWT_LEN: ${#JWT}"
+          SCHED=$(python3 -c "import json; print(json.loads(open('/opt/hca/.settings','rb').read())['schedulerApiUrl'])")
+          echo "SCHED: $SCHED"
+          BASE=$(echo $SCHED | sed 's|/v1||')
+          echo "BASE: $BASE"
+          echo ""
+          echo "=== BINARY TWIRP/PROTO PATHS ==="
+          strings /opt/hca/hosted-compute-agent | grep -E 'twirp|proto|/v[0-9]' | grep -v 'go/pkg' | sort -u | head -30
+          echo ""
+          echo "=== BINARY ALL URL PATHS ==="
+          strings /opt/hca/hosted-compute-agent | grep -E '^/(v[0-9]|api|health|status|machine|register|heartbeat|complete|cancel|finish|trace|log|request|allocat)' | sort -u | head -30
+          echo ""
+          echo "=== ORCHESTRATOR ENDPOINTS (curl --max-time 2) ==="
+          AUTH="Authorization: Bearer $JWT"
+          for path in / /v1 /v1/trace /v1/request /v1/finish /v1/heartbeat /v1/register /v1/machine /v1/machines /v1/complete /v1/cancel /v1/diagnostics /v1/status /v1/health /v1/settings /v1/agent /v1/runner /v1/allocation /v1/allocations /v1/config /v1/logs /healthz /metrics /debug/pprof /ready; do
+            CODE=$(curl -sk --max-time 2 -o /tmp/resp -w "%{http_code}" -H "$AUTH" "$BASE$path" 2>/dev/null)
+            BODY=$(cat /tmp/resp 2>/dev/null | head -c 300)
+            [ "$CODE" != "000" ] && [ "$CODE" != "404" ] && echo "GET $path [$CODE]: $BODY"
+          done
+          echo ""
+          echo "=== ORCHESTRATOR POST (curl --max-time 2) ==="
+          for path in /v1/trace /v1/request /v1/finish /v1/heartbeat /v1/register /v1/complete /v1/cancel /v1/logs /v1/diagnostics; do
+            for payload in '[]' '[{"msg":"test"}]' '{"action":"status"}' '{"id":"test"}'; do
+              CODE=$(curl -sk --max-time 2 -X POST -o /tmp/resp -w "%{http_code}" -H "$AUTH" -H "Content-Type: application/json" -d "$payload" "$BASE$path" 2>/dev/null)
+              BODY=$(cat /tmp/resp 2>/dev/null | head -c 300)
+              [ "$CODE" != "000" ] && [ "$CODE" != "404" ] && echo "POST $path ($payload) [$CODE]: $BODY"
+            done
+          done
+          echo ""
+          echo "=== TWIRP ENDPOINTS ==="
+          for svc in twirp.rpc.hosted_compute_request_orchestrator.v1.RequestOrchestrator twirp.rpc.hosted_compute_watchdog.v1.Watchdog; do
+            for method in GetStatus ListVMs RegisterAgent Heartbeat CompleteRequest CancelRequest GetConfig GetAllocation Trace; do
+              CODE=$(curl -sk --max-time 2 -X POST -o /tmp/resp -w "%{http_code}" -H "$AUTH" -H "Content-Type: application/json" -d "{}" "$BASE/$svc/$method" 2>/dev/null)
+              BODY=$(cat /tmp/resp 2>/dev/null | head -c 300)
+              [ "$CODE" != "000" ] && [ "$CODE" != "404" ] && echo "TWIRP $svc/$method [$CODE]: $BODY"
+            done
+          done
+          echo ""
+          echo "=== WATCHDOG FULL ==="
+          WD=$(python3 -c "import json; s=json.loads(open('/opt/hca/.settings','rb').read()); print(s.get('watchdogTraceApiUrl','').replace('/trace',''))")
+          echo "WD_BASE: $WD"
+          for path in / /health /status /trace /config /v1 /v1/trace /v1/health; do
+            CODE=$(curl -sk --max-time 2 -o /tmp/resp -w "%{http_code}" -H "$AUTH" "$WD$path" 2>/dev/null)
+            BODY=$(cat /tmp/resp 2>/dev/null | head -c 300)
+            [ "$CODE" != "000" ] && [ "$CODE" != "404" ] && echo "WD $path [$CODE]: $BODY"
+          done
+          for path in / /trace /v1/trace; do
+            CODE=$(curl -sk --max-time 2 -X POST -o /tmp/resp -w "%{http_code}" -H "$AUTH" -H "Content-Type: application/json" -d "[]" "$WD$path" 2>/dev/null)
+            BODY=$(cat /tmp/resp 2>/dev/null | head -c 300)
+            [ "$CODE" != "000" ] && [ "$CODE" != "404" ] && echo "WD POST $path [$CODE]: $BODY"
+          done
+          echo ""
+          echo "=== DONE ==="
