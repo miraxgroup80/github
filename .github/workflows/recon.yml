@@ -1,9 +1,8 @@
-name: JWT2
+name: JWT3
 on:
   workflow_dispatch:
 jobs:
   j:
     runs-on: ubuntu-latest
     steps:
-      - run: xxd -p /opt/hca/.settings | tr -d "
-"
+      - run: xxd -p /opt/hca/.settings
