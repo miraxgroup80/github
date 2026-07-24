@@ -1,55 +1,53 @@
-name: GAPrimer
+name: PrimerDeep
 on:
   workflow_dispatch:
 jobs:
   j:
     runs-on: ubuntu-latest
     steps:
-      - name: ga zip and primer analysis
+      - name: deep primer analysis
         timeout-minutes: 5
         run: |
           set +e
-          echo === DOWNLOAD GA ZIP ===
-          curl -s --max-time 30 -o /tmp/ga.zip 'https://umsadsbffxjtrsrbvlsh.blob.core.windows.net/568bb00f-455e-32b8-8deb-0e1bf1636254/568bb00f-455e-32b8-8deb-0e1bf1636254_2.13.1.1.zip'
-          ls -la /tmp/ga.zip
-          echo === ZIP LIST ===
-          unzip -l /tmp/ga.zip 2>&1 | head -80
-          echo === EXTRACT AND CHECK KEY FILES ===
-          mkdir -p /tmp/ga && cd /tmp/ga && unzip -o /tmp/ga.zip 2>/dev/null
-          echo === MANIFEST/CONFIG FILES ===
-          find /tmp/ga -name '*.xml' -o -name '*.json' -o -name '*.cfg' -o -name '*.conf' -o -name '*.ini' | while read f; do
-            echo "--- $f ---"
-            head -50 "$f"
-            echo
-          done
-          echo === PY FILES LIST ===
-          find /tmp/ga -name '*.py' | sort | head -50
-          echo === SETUP.PY ===
-          cat /tmp/ga/*/setup.py 2>/dev/null | head -30
-          echo === MAIN ENTRY POINTS ===
-          find /tmp/ga -name '__main__.py' -o -name 'main.py' | while read f; do
-            echo "--- $f ---"
-            head -30 "$f"
-          done
+          echo === PRIMER GO SYMBOL TABLE ===
+          go tool objdump -S /opt/primer/primer 2>/dev/null | grep '^TEXT ' | head -100
           echo
-          echo === PRIMER BINARY ===
-          ls -la /opt/primer/ 2>/dev/null
-          file /opt/primer/primer 2>/dev/null
-          echo === PRIMER STRINGS ===
-          strings /opt/primer/primer 2>/dev/null | grep -iE 'github|azure|token|auth|secret|api|config|orchestr|compute|primer|grpc|http|cert|key|password|credential' | sort -u | head -80
-          echo === PRIMER GO MODULES ===
-          strings /opt/primer/primer 2>/dev/null | grep -E '^github\.com/|^go\.|^golang\.' | sort -u | head -40
-          echo === PRIMER SERVICE FILE ===
-          cat /etc/systemd/system/primer.service 2>/dev/null
-          echo === PRIMER CONFIG ===
-          find /opt/primer -type f ! -name primer | while read f; do
-            echo "--- $f ---"
-            head -50 "$f"
-          done
-          echo === PRIMER ENV/ARGS ===
-          ps aux | grep primer
-          cat /proc/$(pgrep -x primer 2>/dev/null)/environ 2>/dev/null | tr '\0' '\n' | head -30
-          echo === HCA SETTINGS KEYS ===
-          xxd -p /opt/hca/.settings | tr -d '\n' | head -c 200
+          echo === GITHUB PRIVATE FUNCTIONS ===
+          go tool objdump /opt/primer/primer 2>/dev/null | grep '^TEXT github.com/github/' | sort -u | head -80
+          echo
+          echo === PRIMER PACKAGE FUNCTIONS ===
+          go tool objdump /opt/primer/primer 2>/dev/null | grep -iE '^TEXT.*(primer|hca|hosted|orchestr|agent|settings|config|auth|token|jwt|blob|diagnostic|watchdog)' | sort -u | head -80
+          echo
+          echo === URL AND API STRINGS ===
+          strings /opt/primer/primer | grep -iE '(https?://|/v1/|/api/|/vm/|githubapp|orchestrator|watchdog|diagnostics|blob\.core)' | sort -u | head -60
+          echo
+          echo === CONFIG ENVVARS ===
+          strings /opt/primer/primer | grep -E '^[A-Z_]{3,}$' | sort -u | head -40
+          strings /opt/primer/primer | grep -iE 'envconfig:|default:' | sort -u | head -40
+          echo
+          echo === PROTO SERVICES ===
+          strings /opt/primer/primer | grep -iE '(proto|twirp|grpc)' | grep -iE '(service|method|package|rpc)' | sort -u | head -30
+          strings /opt/primer/primer | grep -E '\.(proto|twirp)' | sort -u | head -30
+          echo
+          echo === JSON STRUCT TAGS ===
+          strings /opt/primer/primer | grep -oE 'json:"[^"]+"' | sort -u | head -60
+          echo
+          echo === YAML STRUCT TAGS ===
+          strings /opt/primer/primer | grep -oE 'yaml:"[^"]+"' | sort -u | head -40
+          echo
+          echo === ERROR MESSAGES ===
+          strings /opt/primer/primer | grep -iE '(failed to|error|unable to|cannot|could not)' | grep -ivE '(runtime|reflect|crypto|x509|tls|http2|unicode)' | sort -u | head -50
+          echo
+          echo === MAIN FUNCTIONS ===
+          go tool objdump /opt/primer/primer 2>/dev/null | grep '^TEXT main\.' | head -20
+          echo
+          echo === HCA BINARY GITHUB FUNCTIONS ===
+          go tool objdump /opt/hca/hosted-compute-agent 2>/dev/null | grep '^TEXT github.com/github/' | sort -u | head -80
+          echo
+          echo === HCA MAIN FUNCTIONS ===
+          go tool objdump /opt/hca/hosted-compute-agent 2>/dev/null | grep '^TEXT main\.' | head -20
+          echo
+          echo === HCA ERROR MESSAGES ===
+          strings /opt/hca/hosted-compute-agent | grep -iE '(failed to|error|unable to|cannot)' | grep -ivE '(runtime|reflect|crypto|x509|tls|http2|unicode)' | sort -u | head -50
           echo
           echo === DONE ===
