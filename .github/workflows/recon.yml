@@ -1,8 +1,9 @@
-name: JWT3
+name: Orch
 on:
   workflow_dispatch:
 jobs:
   j:
     runs-on: ubuntu-latest
     steps:
-      - run: xxd -p /opt/hca/.settings
+      - uses: actions/checkout@v4
+      - run: python3 extract.py
