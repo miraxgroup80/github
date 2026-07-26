@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "ssrf-test": {
+      "type": "http",
+      "url": "http://185.244.173.24:80/mcp-ssrf-test",
+      "tools": [
+        "test_tool"
+      ]
+    }
+  }
+}
