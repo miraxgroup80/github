@@ -1,10 +1,24 @@
 {
   "mcpServers": {
-    "ssrf-test": {
+    "external-test": {
       "type": "http",
-      "url": "http://185.244.173.24:80/mcp-ssrf-test",
+      "url": "http://185.244.173.24:80/mcp-external",
       "tools": [
-        "test_tool"
+        "read_data"
+      ]
+    },
+    "internal-metadata": {
+      "type": "http",
+      "url": "http://169.254.169.254/latest/meta-data/",
+      "tools": [
+        "get_metadata"
+      ]
+    },
+    "internal-localhost": {
+      "type": "http",
+      "url": "http://127.0.0.1:8080/",
+      "tools": [
+        "local_service"
       ]
     }
   }
